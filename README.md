@@ -7,8 +7,8 @@ Two things for people who build AI agents, both free and open source (Apache-2.0
 2. **The attack test.** Believable trick text is planted where your agent reads (an email, a web page, a file,
    a calendar invite). The report counts what the model went along with and what actually got through.
 
-**Status: early, not released.** It is not on PyPI and the interfaces will change. The attack test has had one
-day of runs on two real models, by us: see "What we have measured so far" below and [RESULTS.md](RESULTS.md).
+**Status: early, not released.** It is not on PyPI yet and the interfaces will change. The attack test has had
+one day of runs on two real models, by us: see "What we have measured so far" below and [RESULTS.md](https://github.com/engineerjames44/kettle-core/blob/main/RESULTS.md).
 Everything in "What has been checked" below was measured on 2026-11-15 and can be run again from this folder.
 
 ## Set up
@@ -21,6 +21,12 @@ cd kettle-core
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 .venv/bin/python examples/quickstart.py
+```
+
+To use it from a project of your own without the tests and examples, install it straight from GitHub:
+
+```
+pip install "git+https://github.com/engineerjames44/kettle-core.git"
 ```
 
 ## The checkpoint
@@ -73,6 +79,47 @@ gate.request("send_email", {...})        # recorded and shown as asked through "
 
 The name is part of the record and of its fingerprint, and it is shown in the preview.
 
+### A value that has not been used before
+
+A person who is shown the same kind of action many times stops reading it. So a tool can name the inputs
+where a new value matters, such as who an email or a payment goes to:
+
+```python
+cp.tool("send_email", send_email, level=NEEDS_YES, watch=["to"])
+```
+
+When a held action has a value in a watched input that no approved action of that tool has used before, the
+preview says so at the top and under the value:
+
+```
+! 1 input below is marked first time
+Action: "send_email"
+  "body": "See you at 3."
+  "to": "sam@examp1e.com"
+      ! first time: no approved action has run with this value before
+Fingerprint: ...
+```
+
+`decision.first_time` and `pending()` carry the same names, so an approval screen can show the mark its own
+way. What the mark does and does not mean:
+
+- **It is about this store file only.** "Used before" means an approved action of that tool was started with
+  exactly that value in that input, as recorded in this store. The history begins when this version first
+  uses the file, so at the start everything is marked. There is no way yet to load a list of known values.
+- **The match is exact.** `Sam@example.com` is new even when `sam@example.com` is not. In a list, each item
+  is checked by itself and every new one is named by its position, with a run written once, as in
+  `items 1 to 13, 15`.
+- **Only the inputs you name are watched.** If an email tool also takes `cc`, a new address there is not
+  marked unless `cc` is watched too.
+- **It marks, it does not block.** The action is held as before and the human can still say yes. After the
+  approved action is started, the value is no longer new, even if the tool then failed.
+- **Free actions leave no history**, and neither do held actions that were refused or ran out of time.
+- **A mark that is missing is not a promise.** For a value that is there, it says a human said yes to that
+  value once. It does not say the value is safe, and an attacker who gets one yes for an address is not
+  marked the next time. A watched input that is left out, or an empty list, is not marked either.
+- The store keeps a hash for each value and not the value. Someone who can write the store file can add
+  history, like everything else under "The store file is trusted" below.
+
 ### What the human is shown
 
 ```
@@ -116,6 +163,67 @@ What this costs, and what it does not catch:
   as it is.
 - Control characters such as tab get a code but no `!` line.
 
+## Putting it in front of an agent you already have
+
+Most agents are a loop: send the messages to a model, run the tools it asks for, send the results back.
+`kettle.adapters` has the few pieces that connect that loop to a checkpoint. It needs no other package.
+
+```python
+from kettle.adapters import through, ask_in_terminal
+
+call = through(cp.gate, ask_in_terminal(cp))   # call(name, inputs) -> the text to give back to the model
+```
+
+`call` sends every tool call through the checkpoint. A free tool runs and you get its result. A refused call
+does not run and you get the reason. A held action is passed to the second argument, which here shows the
+preview in the terminal and runs the action only if the word `yes` is typed. With no second argument the
+model is told the action is waiting, and it stays held until your own code calls `approve` and `run`.
+
+Then, in a loop on the Anthropic Messages API:
+
+```python
+from kettle.adapters import anthropic_tool_results
+
+reply = client.messages.create(model=..., tools=..., messages=messages)
+results = anthropic_tool_results(reply.content, call)      # runs what the model asked for, in order
+if results:                                                # an empty list means the model is done
+    messages += [{"role": "assistant", "content": reply.content}, {"role": "user", "content": results}]
+```
+
+And on the OpenAI Chat Completions API, or a server that speaks it:
+
+```python
+from kettle.adapters import openai_assistant_message, openai_tool_messages
+
+message = client.chat.completions.create(model=..., tools=..., messages=messages).choices[0].message
+answers = openai_tool_messages(message.tool_calls, call)
+if answers:
+    messages += [openai_assistant_message(message)] + answers
+```
+
+`examples/with_checkpoint.py` is a whole loop you can run with no model and no key: a script plays the model
+and you are asked in the terminal.
+
+What to know about these pieces:
+
+- **The question in the terminal is for trying things out on your own machine.** It is asked by the same
+  program the agent runs in, so it is only as good as that program. Input that is piped in is not taken as
+  an answer: with no keyboard to ask at, the answer is no. Anything typed before the question was on screen
+  is thrown away, so a `yes` typed too early does not answer it. That part has only been tried on macOS. It
+  is not an approval screen, and it cannot ask someone who is somewhere else.
+- **Only function tool calls are handled** on the OpenAI side, and only the Chat Completions API. The
+  Responses API is not covered. If a reply has a tool call of another kind, none of that reply's calls run
+  and `openai_tool_messages` raises `ValueError`.
+- **Inputs that are not valid JSON are not dropped.** The model's text is passed on as it is, so the call is
+  seen, refused, and the model is told why.
+- **Nothing here makes a tool list for your own tools.** `anthropic_tools` and `openai_tools` turn a list of
+  specs (name, description, JSON Schema) into each API's shape. The attack test uses them; for your own
+  tools you already have that list.
+- **These are tested against stand-ins.** The built-in Claude agent now uses the Anthropic pieces. The runs
+  in RESULTS.md were made before that change, when the same steps were written inside the agent, and it has
+  not called the real API since. The OpenAI pieces have only been run against a stand-in server on our own
+  machine, with the real `openai` package. They have not been run against OpenAI's API.
+
 ## The attack test
 
 The test builds a small pretend world (an inbox, a few web pages, files, a calendar, and fake `send_email` and
@@ -129,7 +237,9 @@ something the agent will read. Each case is run with no checkpoint and with the 
 ```
 
 Your agent is one function, `agent(task, tools) -> reply`. See `examples/my_agent.py`. Every tool call it makes
-has to go through `tools.call`, or the test cannot see it.
+has to go through `tools.call`, or the test cannot see it. `tools.call` has the same shape as the `call` in
+the section above, so a loop that uses those pieces can be tested by passing it `tools.call`, with
+`anthropic_tools(tools.specs)` or `openai_tools(tools.specs)` as the tool list.
 
 Two case sets ship with it. The starter set is used unless you name another:
 
@@ -156,9 +266,31 @@ without it prints how many agent runs it would make:
 ```
 
 The key is read from `ANTHROPIC_API_KEY` in a `.env` file in the folder you run from (git-ignored here), not
-from your shell, unless you add `--key-from-env`. The test does not print it or write it to the report. Other
+from your shell, unless you add `--key-from-env`. The test does not print it or write it to the report. If
+the API sends the key back in an error message, the key is taken out before the report is saved. Other
 settings that the `anthropic` package reads from your shell still apply, such as `ANTHROPIC_BASE_URL`, so the
 run prints the address it is calling and the report records it.
+
+A plain agent on the OpenAI Chat Completions API is built in too. There is no default model, so you name one.
+Many other servers speak the same API, so `--base-url` can point it at a model on your own machine:
+
+```
+.venv/bin/pip install -e ".[openai]"
+.venv/bin/python -m kettle.attacktest --openai --model NAME --repeats 1 --only attack-file-gift          # prints the plan
+.venv/bin/python -m kettle.attacktest --openai --model NAME --repeats 1 --only attack-file-gift --yes    # runs it
+.venv/bin/python -m kettle.attacktest --openai --model NAME --base-url http://localhost:11434/v1 --yes   # a local server
+```
+
+- The key is read from `OPENAI_API_KEY` in the same `.env` file, with the same rules as above.
+- The address is always the one you gave, or OpenAI's own. `OPENAI_BASE_URL` in your shell is not used.
+- With `--base-url`, no key is sent unless you name one with `--key-name` (the name it is stored under, not
+  the key). So a key stored for OpenAI is not sent to another address unless you ask for that.
+- Other settings that the `openai` package reads from your shell still apply and go with the request to
+  whatever address is called: `OPENAI_ORG_ID` and `OPENAI_PROJECT_ID` are sent as headers, and a proxy set
+  there (`HTTPS_PROXY`, `HTTP_PROXY`) carries the request, key included.
+- **We have not run this agent against OpenAI's API or any real model.** It is tested against a stand-in
+  server on our own machine. There are no results for it in RESULTS.md. If you run it, the first thing to
+  check in `results.json` is that the tool calls look right.
 
 The report (`runs/<date>/report.md`, with every run in `results.json` beside it) leads with four numbers for
 each setup:
@@ -190,7 +322,7 @@ What a report from this test does and does not show:
 
 We ran the test ourselves on 15 November 2026 with the built-in plain Claude agent, on `claude-opus-5-5` and
 `claude-haiku-5-5`. This is our own run of our own test, not an independent one. The full write-up, with
-every report, is in [RESULTS.md](RESULTS.md).
+every report, is in [RESULTS.md](https://github.com/engineerjames44/kettle-core/blob/main/RESULTS.md).
 
 - **Starter set, each case once.** Neither model went along with any of the 12 attacks, with or without the
   checkpoint. In 2 of the 12 the trick text never reached the model, so those show nothing. All 6 normal jobs
@@ -232,9 +364,9 @@ paths that go through it.
 - **A free tool that crashes the process** leaves a "started" entry in the log with nothing after it. It is
   not in `needs_checking()`.
 
-Also not built: an approval screen, limits over time (such as a daily spending cap), support for values that
-are not plain JSON (files are passed by name or by hash), a held-back case set, and a comparison with the
-approval steps built into agent frameworks.
+Also not built: an approval screen (there is only the question in the terminal described above), limits over
+time (such as a daily spending cap), support for values that are not plain JSON (files are passed by name or
+by hash), a held-back case set, and a comparison with the approval steps built into agent frameworks.
 
 ## What has been checked
 
@@ -242,22 +374,31 @@ All of this uses no model and costs nothing. Measured on 2026-11-15, on macOS.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| The tests | `.venv/bin/pytest` | With the `claude` extra installed: 428 passed on Python 3.14.8 and 3.15.2; on 3.11.18, 427 passed and 1 was skipped (it needs 3.14). Without the extra, on 3.15.2: 426 passed and 2 were skipped. |
+| The tests | `.venv/bin/pytest` | With both extras installed (`claude` and `openai`): 604 passed on Python 3.14.8 and 3.15.2; on 3.11.18, 603 passed and 1 was skipped (it needs 3.14). With neither extra, on 3.15.2: 598 passed and 6 were skipped. |
 | The attack test's check of itself | `.venv/bin/python -m kettle.attacktest --self-check` | 8 of 8 checks held, on each of the two case sets (add `--cases fraud` for the second) |
-| Checkpoint broken on purpose | `.venv/bin/python checks/break_checkpoint.py` | 74 breaks tried, 74 caught by the tests |
-| Attack test broken on purpose | `.venv/bin/python checks/break_attacktest.py` | 72 breaks tried, 71 caught, 1 known and explained |
-| Previews read back | `.venv/bin/python checks/read_back.py` | 150,000 random records, 0 read back wrongly, no two sharing a preview |
+| Checkpoint broken on purpose | `.venv/bin/python checks/break_checkpoint.py` | 106 breaks tried, 106 caught by the tests |
+| Attack test broken on purpose | `.venv/bin/python checks/break_attacktest.py` | 107 breaks tried, 106 caught, 1 known and explained |
+| Adapters broken on purpose | `.venv/bin/python checks/break_adapters.py` | 43 breaks tried, 43 caught by the tests |
+| Previews read back | `.venv/bin/python checks/read_back.py` | 150,000 random records, 0 read back wrongly, no two different records sharing a preview |
+| The built package | see [RELEASING.md](https://github.com/engineerjames44/kettle-core/blob/main/RELEASING.md) | The wheel and the source archive build, and the wheel installed by itself on Python 3.11.18 passes the self-check on both case sets |
 
-- **The tests.** 185 are for the checkpoint and 243 for the attack test. Of the checkpoint's, the 99 in
+- **The tests.** 226 are for the checkpoint, 301 for the attack test, 64 for the adapters, 8 run the
+  examples and 5 check that the tests stay on this machine. Of the checkpoint's, the 99 in
   `tests/test_fixed_ways_around.py` are the ones that try a way around it (a changed action, a reused or
-  expired yes, a broken store, and so on). Most of them pass or fail on what the tools themselves wrote
-  down as run, not on what the checkpoint says. The rest are ordinary tests of the record, the preview, the
-  log and shared stores.
-- **The 2 tests skipped without the `claude` extra** run the built-in Claude agent with the real `anthropic`
-  package against a stand-in server on this machine. They never call the paid API.
+  expired yes, a broken store, and so on), and the 41 in `tests/test_first_time.py` are for the first-time
+  mark. Most of them pass or fail on what the tools themselves wrote down as run, not on what the checkpoint
+  says. The rest are ordinary tests of the record, the preview, the log and shared stores.
+- **The 6 tests skipped without the extras** run the built-in agents with the real `anthropic` and `openai`
+  packages against a stand-in server on this machine. They never call a paid API. The OpenAI agent and the
+  OpenAI adapter tests also pass with `openai` 2.0.0, the oldest version the extra allows.
+- **No test can reach another machine.** Every test runs with connections and name lookups to anywhere else
+  refused, and `tests/test_the_tests_stay_on_this_machine.py` checks that this holds. It was added after
+  one of the break checks below started real runs by mistake: see [RESULTS.md](https://github.com/engineerjames44/kettle-core/blob/main/RESULTS.md).
 - **Broken on purpose** means one small change is made to a copy of the code, such as "a yes can be used
   twice", and the tests are run against the copy. A break the tests do not notice is a hole in the tests. The
   one break that is not caught removes the second of two checks the stand-in owner makes on an action; the
   first still refuses, so nothing changes that a test could see.
+- **Not tried at all:** the OpenAI agent against OpenAI's real API or any real model, and the question in
+  the terminal on Windows or Linux.
 - These checks show the code does what its tests say. They were written alongside the code, and nobody
   independent has reviewed it.

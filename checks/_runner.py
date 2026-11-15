@@ -1,4 +1,4 @@
-"""Shared by the two break_*.py scripts: break the code one way, run the tests, see if they notice."""
+"""Shared by the break_*.py scripts: break the code one way, run the tests, see if they notice."""
 
 import os
 import pathlib
@@ -52,7 +52,7 @@ def run(mutants, tests, expected_to_survive=None):
         out = subprocess.run(
             [sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider"] + [str(ROOT / "tests" / name) for name in tests],
             cwd=str(ROOT),
-            env={**os.environ, "PYTHONPATH": str(copy)},
+            env={**{name: value for name, value in os.environ.items() if not name.endswith("_API_KEY")}, "PYTHONPATH": str(copy)},
             capture_output=True,
             text=True,
         )

@@ -13,7 +13,9 @@ request(). That is the builder's job; see the README.
 
 from __future__ import annotations
 
+import hashlib
 import hmac
+import json
 import math
 import os
 import secrets
@@ -55,6 +57,9 @@ class Decision:
     status is one of: ran, held, approved, denied, refused, unknown.
     "unknown" means a tool was started and then failed, so it may or may not have
     acted. It is never retried; someone has to check.
+
+    first_time is set on a held action: the watched inputs whose value no approved
+    action has run with before. The preview marks the same inputs.
     """
 
     status: str
@@ -65,6 +70,7 @@ class Decision:
     preview: Optional[str] = None
     expires_at: Optional[float] = None
     result: Any = None
+    first_time: tuple = ()
 
 
 class Checkpoint:
@@ -95,9 +101,14 @@ class Checkpoint:
         level: Level,
         describe: Optional[Callable[[dict], str]] = None,
         replace: bool = False,
+        watch: Any = (),
     ) -> None:
-        """List a tool. level is FREE, NEEDS_YES, NEVER, or a function of the inputs returning one of them."""
-        self._rules.add(name, run, level=level, describe=describe, replace=replace)
+        """List a tool. level is FREE, NEEDS_YES, NEVER, or a function of the inputs returning one of them.
+
+        watch names inputs, such as ["to"], to mark in the preview when they hold a
+        value that no approved action of this tool has run with before.
+        """
+        self._rules.add(name, run, level=level, describe=describe, replace=replace, watch=watch)
 
     def remove_tool(self, name: str) -> None:
         self._rules.remove(name)
@@ -152,12 +163,17 @@ class Checkpoint:
                     tx.log(now, "started", None, record.tool, record.fingerprint, {"level": FREE, "rules": self._rules.digest()})
             else:
                 request_id = secrets.token_hex(16)
-                preview = record.preview(self._summary(found, record))
+                summary = self._summary(found, record)
                 with self._store.write() as tx:
                     now = self._clock()
                     expires_at = now + self._hold_seconds
+                    first_time = _first_time(found, record, tx.seen)
+                    preview = record.preview(summary, first_time)
                     tx.insert_request(request_id, record.fingerprint, record.canonical, now, expires_at)
-                    tx.log(now, "held", request_id, record.tool, record.fingerprint, {"expires_at": expires_at, "rules": self._rules.digest()})
+                    detail = {"expires_at": expires_at, "rules": self._rules.digest()}
+                    if found.watch:
+                        detail["first_time"] = sorted(first_time)
+                    tx.log(now, "held", request_id, record.tool, record.fingerprint, detail)
                 return Decision(
                     HELD,
                     "Held: this action needs a human yes. Nothing was run.",
@@ -166,6 +182,7 @@ class Checkpoint:
                     fingerprint=record.fingerprint,
                     preview=preview,
                     expires_at=expires_at,
+                    first_time=tuple(sorted(first_time)),
                 )
         except Exception as error:
             return self._broken(error, tool_name)
@@ -271,6 +288,8 @@ class Checkpoint:
                     return Decision(REFUSED, f"Refused and cancelled: {error}. Nothing was run.", tool=tool, request_id=request_id)
                 if not tx.move(request_id, ("approved",), "running", started_at=now, worker=self._worker):
                     return Decision(REFUSED, "Refused: that yes was already used. Nothing was run.", tool=tool, request_id=request_id)
+                for mark in _marks(record):  # from now on these values are not new for this tool
+                    tx.mark_seen(mark, now)
                 tx.log(now, "started", request_id, record.tool, record.fingerprint, {"level": NEEDS_YES, "rules": self._rules.digest()})
         except Exception as error:
             return self._broken(error, None)
@@ -288,13 +307,15 @@ class Checkpoint:
                 found = self._rules.find(record.tool)
             except (Refused, RecordError):
                 continue
+            first_time = _first_time(found, record, self._store.seen)
             waiting.append(
                 {
                     "request_id": row["id"],
                     "tool": record.tool,
                     "fingerprint": record.fingerprint,
-                    "preview": record.preview(self._summary(found, record)),
+                    "preview": record.preview(self._summary(found, record), first_time),
                     "expires_at": row["expires_at"],
+                    "first_time": sorted(first_time),
                 }
             )
         return waiting
@@ -443,6 +464,42 @@ class Gate:
 
     def tool_names(self) -> list[str]:
         return self._names()
+
+
+def _mark(tool: str, key: str, value: Any) -> str:
+    """What the store keeps for "this tool has run with this value in this input". A hash, not the value."""
+    text = json.dumps([tool, key, value], sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+    return hashlib.sha256(b"kettle-seen-v1\n" + text.encode("ascii")).hexdigest()
+
+
+def _marks(record: ActionRecord) -> list[str]:
+    """A mark for every input of the record. A list is marked item by item."""
+    marks = []
+    for key, value in record.inputs().items():
+        marks += [_mark(record.tool, key, item) for item in (value if type(value) is list else [value])]
+    return marks
+
+
+def _first_time(found: Tool, record: ActionRecord, seen: Callable[[str], bool]) -> dict:
+    """The watched inputs holding a value that is new: None for the whole value, or the new items of a list from 1.
+
+    The match is exact. "Sam@example.com" is new even if "sam@example.com" is not.
+    """
+    new: dict = {}
+    if not found.watch:
+        return new
+    inputs = record.inputs()
+    for key in found.watch:
+        if key not in inputs:
+            continue
+        value = inputs[key]
+        if type(value) is list:
+            items = [number for number, item in enumerate(value, 1) if not seen(_mark(record.tool, key, item))]
+            if items:
+                new[key] = items
+        elif not seen(_mark(record.tool, key, value)):
+            new[key] = None
+    return new
 
 
 def _same(left: Any, right: Any) -> bool:

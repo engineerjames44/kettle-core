@@ -131,19 +131,26 @@ class ActionRecord:
     def actor(self) -> Optional[str]:
         return self._body()["actor"]
 
-    def preview(self, summary: Optional[str] = None) -> str:
+    def preview(self, summary: Optional[str] = None, first_time: Optional[dict] = None) -> str:
         """What a human is shown before saying yes. Written here, from the record.
 
         It is plain ASCII, no line is longer than PREVIEW_WIDTH, and it can be read
         back to exactly the record: see the notes above _pieces and _fold.
+
+        first_time names the inputs to mark as new: each name maps to None for the
+        whole value, or to the numbers (from 1) of the new items in a list. The
+        marks are "!" notes. They are not part of the record or its fingerprint.
         """
+        inputs = self.inputs()
+        marked = {key: _first_time_lines(items, "      ") for key, items in (first_time or {}).items() if key in inputs}
         lines = []
+        if marked:
+            lines.append(f"! {len(marked)} input{' below is' if len(marked) == 1 else 's below are'} marked first time")
         if summary:
             lines += _text_lines("Summary (written by the app): ", [], summary, "  ")
         lines += _text_lines("Action: ", [], self.tool, "  ")
         if self.actor is not None:
             lines += _text_lines("Asked through (set by the app): ", [], self.actor, "  ")
-        inputs = self.inputs()
         if not inputs:
             lines.append("Inputs: none")
         for key in sorted(inputs):
@@ -153,6 +160,7 @@ class ActionRecord:
                 lines += _text_lines("  ", label, value, "      ", noted=key)
             else:
                 lines += _json_lines("  ", label, value, "      ", noted=key)
+            lines += marked.get(key, [])
         lines.append(f"Fingerprint: {self.fingerprint}")
         return "\n".join(lines)
 
@@ -232,6 +240,30 @@ def _note_lines(text: str, indent: str) -> list[str]:
     more = f", and {len(odd) - 4} more" if len(odd) > 4 else ""
     mark = indent + "! "
     return textwrap.wrap("not plain ASCII: " + ", ".join(named) + more, width=PREVIEW_WIDTH, initial_indent=mark, subsequent_indent=mark)
+
+
+def _in_runs(items: list) -> str:
+    """Numbers with each unbroken run written once: 1, 2, 3, 4, 7 becomes "1 to 4, 7". Every number is still named."""
+    runs: list = []
+    for item in items:
+        if runs and item == runs[-1][1] + 1:
+            runs[-1][1] = item
+        else:
+            runs.append([item, item])
+    return ", ".join(str(first) if first == last else f"{first}, {last}" if last == first + 1 else f"{first} to {last}" for first, last in runs)
+
+
+def _first_time_lines(items: Optional[list], indent: str) -> list[str]:
+    """The note under an input whose value, or some items of it, no approved action has run with before."""
+    if items is None:
+        what = "this value"
+    else:
+        if type(items) is not list or not items or any(type(item) is not int or item < 1 for item in items):
+            raise RecordError("the items to mark as first time must be a list of numbers from 1")
+        what = ("item " if len(items) == 1 else "items ") + _in_runs(items)
+    mark = indent + "! "
+    text = f"first time: no approved action has run with {what} before"
+    return textwrap.wrap(text, width=PREVIEW_WIDTH, initial_indent=mark, subsequent_indent=mark)
 
 
 def _text_lines(head: str, label: list[str], text: str, indent: str, noted: str = "") -> list[str]:

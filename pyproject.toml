@@ -4,19 +4,45 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kettle-labs"
-version = "0.0.1"
+dynamic = ["version"]
 description = "A checkpoint in plain code that holds an agent's risky actions for a human yes, and an attack test that counts what gets through."
 readme = "README.md"
 license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
+authors = [{ name = "Kettle Labs" }]
+keywords = ["ai agents", "prompt injection", "human in the loop", "approval", "tool use", "security testing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security",
+    "Topic :: Software Development :: Testing",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://www.kettlelabs.si"
+Source = "https://github.com/engineerjames44/kettle-core"
+Issues = "https://github.com/engineerjames44/kettle-core/issues"
+Results = "https://github.com/engineerjames44/kettle-core/blob/main/RESULTS.md"
 
 [project.optional-dependencies]
 claude = ["anthropic>=2.6,<3"]
+openai = ["openai>=2,<3"]
 dev = ["pytest>=8"]
+
+[tool.hatch.version]
+path = "src/kettle/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kettle"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src/kettle", "/tests", "/checks", "/examples", "/README.md", "/RESULTS.md", "/PRIOR-WORK.md", "/RELEASING.md", "/LICENSE", "/pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

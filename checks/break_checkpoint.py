@@ -11,7 +11,7 @@ in the tests. The code in src/ is never changed.
 from _runner import nth, rep, run
 
 C, R, S, U = "checkpoint/checkpoint.py", "checkpoint/record.py", "checkpoint/store.py", "checkpoint/rules.py"
-TESTS = ["test_fixed_ways_around.py", "test_record_and_preview.py", "test_log_and_setup.py", "test_workers.py"]
+TESTS = ["test_fixed_ways_around.py", "test_record_and_preview.py", "test_log_and_setup.py", "test_workers.py", "test_first_time.py"]
 
 CLOCK_IN = "            with self._store.write() as tx:\n                now = self._clock()\n                row = tx.get(request_id)"
 CLOCK_OUT = "            now = self._clock()\n            with self._store.write() as tx:\n                row = tx.get(request_id)"
@@ -93,6 +93,39 @@ MUTANTS = [
     ("fixed inputs not checked", U, rep('        if taken:\n', '        if False:\n')),
     ("checking the log crashes on odd values", S, rep('except (TypeError, ValueError):  # a value of a kind', 'except ZeroDivisionError:  # a value of a kind')),
     ("reading the log crashes on odd values", S, rep('except (ValueError, TypeError):  # edited by hand', 'except ZeroDivisionError:  # edited by hand')),
+    # ---- the first-time mark ----
+    ("a new value is not marked", C, rep('elif not seen(_mark(record.tool, key, value)):', 'elif False:')),
+    ("new items of a list are not marked", C, rep('            if items:\n                new[key] = items', '            if False:\n                new[key] = items')),
+    ("a list is compared whole, not item by item", C, rep('        if type(value) is list:\n            items = [number', '        if False:\n            items = [number')),
+    ("a list is remembered whole, not item by item", C, rep('for item in (value if type(value) is list else [value])]', 'for item in [value]]')),
+    ("list items are numbered from 0", C, rep('enumerate(value, 1)', 'enumerate(value)')),
+    ("asking makes a value known", C, rep('                    tx.insert_request(request_id, record.fingerprint, record.canonical, now, expires_at)\n', '                    tx.insert_request(request_id, record.fingerprint, record.canonical, now, expires_at)\n                    [tx.mark_seen(mark, now) for mark in _marks(record)]\n')),
+    ("a yes makes a value known before it is used", C, rep('                if not moved:\n', '                [tx.mark_seen(mark, now) for mark in _marks(record)]\n                if not moved:\n')),
+    ("a used yes does not make a value known", C, rep('                    tx.mark_seen(mark, now)', '                    pass')),
+    ("what is known is not kept apart by tool", C, rep('text = json.dumps([tool, key, value], sort_keys=True', 'text = json.dumps(["", key, value], sort_keys=True')),
+    ("what is known is not kept apart by input", C, rep('text = json.dumps([tool, key, value], sort_keys=True', 'text = json.dumps([tool, "", value], sort_keys=True')),
+    ("values compared without regard to capitals", C, rep('allow_nan=False)\n    return hashlib.sha256(b"kettle-seen-v1', 'allow_nan=False).lower()\n    return hashlib.sha256(b"kettle-seen-v1')),
+    ("values trimmed before they are compared", C, rep('text = json.dumps([tool, key, value], sort_keys=True', 'text = json.dumps([tool, key, value.strip() if type(value) is str else value], sort_keys=True')),
+    ("numbers and text that look alike compared as the same", C, rep('text = json.dumps([tool, key, value], sort_keys=True', 'text = json.dumps([tool, key, str(value)], sort_keys=True')),
+    ("the value itself is kept, not a hash", C, rep('    return hashlib.sha256(b"kettle-seen-v1\\n" + text.encode("ascii")).hexdigest()', '    return text')),
+    ("what is known cannot be read, so the value is treated as known", C, rep('                    first_time = _first_time(found, record, tx.seen)\n', '                    try:\n                        first_time = _first_time(found, record, tx.seen)\n                    except Exception:\n                        first_time = {}\n')),
+    ("what is known cannot be written, and the action runs anyway", S, rep('        self._connection.execute("INSERT OR IGNORE INTO seen (mark, first_at) VALUES (?, ?)", (mark, float(at)))', '        try:\n            self._connection.execute("INSERT OR IGNORE INTO seen (mark, first_at) VALUES (?, ?)", (mark, float(at)))\n        except Exception:\n            pass')),
+    ("the held log entry does not say what was marked", C, rep('                        detail["first_time"] = sorted(first_time)', '                        pass')),
+    ("pending leaves the mark out", C, rep('record.preview(self._summary(found, record), first_time),', 'record.preview(self._summary(found, record)),')),
+    ("the decision does not say what was marked", C, rep('                    first_time=tuple(sorted(first_time)),\n', '')),
+    ("the mark is left out of the preview", R, rep('            lines += marked.get(key, [])\n', '')),
+    ("the count of marked inputs is left off the top", R, rep('        if marked:\n            lines.append(', '        if False:\n            lines.append(')),
+    ("the mark is written without its ! sign", R, lambda t: nth(t, 'mark = indent + "! "', 'mark = indent', 2)),
+    ("only the first twelve new items are named", R, rep('+ _in_runs(items)', '+ _in_runs(items[:12]) + (f" and {len(items) - 12} more" if len(items) > 12 else "")')),
+    ("a run of new items is named without its last one", R, rep("            runs[-1][1] = item\n", "            pass\n")),
+    ("new items next to a known one are named as one run", R, rep("if runs and item == runs[-1][1] + 1:", "if runs:")),
+    ("two new items in a row are written as a run, like 17 to 18", R, rep('f"{first}, {last}" if last == first + 1 else ', "")),
+    ("item numbers that make no sense are written anyway", R, rep('if type(items) is not list or not items or any(type(item) is not int or item < 1 for item in items):', 'if False:')),
+    ("a watched name that is not an input is accepted", U, rep('if key in fixed or not (takes_any or key in by_name):', 'if False:')),
+    ("watch can be something that is not a list", U, rep('    if type(watch) not in (tuple, list):', '    if False:')),
+    ("a tool with nothing to run can watch", U, rep('    if signature is None:\n        raise RulesError(f"{name}: a tool with no function', '    if False:\n        raise RulesError(f"{name}: a tool with no function')),
+    ("watched inputs are left out of the rules digest", U, rep('listed.append([name, level, list(watch)] if watch else [name, level])', 'listed.append([name, level])')),
+    ("the rules digest changes for tools that watch nothing", U, rep('listed.append([name, level, list(watch)] if watch else [name, level])', 'listed.append([name, level, list(watch)])')),
 ]
 
 if __name__ == "__main__":

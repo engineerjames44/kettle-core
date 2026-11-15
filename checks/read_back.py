@@ -1,11 +1,14 @@
 """The long version of the preview read-back test: 150,000 random records, not 3,000.
 
-    .venv/bin/python checks/read_back.py          (under a minute)
+    .venv/bin/python checks/read_back.py          (about a minute)
 
 Each record is built from text chosen to be awkward (spaces, line breaks, unseen
 characters, text that looks like the preview's own marks). Its preview is read back
 by the reader in tests/test_record_and_preview.py, which must get exactly the record
 it was written from. Two different records must never share a preview.
+
+Each record is also written a second time with first-time marks on some inputs,
+chosen at random. The marks must not change what is read back.
 """
 
 import pathlib
@@ -39,6 +42,14 @@ def main():
                 assert found["summary"] == summary, "the summary read back differently"
                 assert ActionRecord.make(found["tool"], found["inputs"], found["actor"]) == record, "a different record was read back"
                 assert found["fingerprint"] == record.fingerprint, "the fingerprint read back differently"
+            except AssertionError as error:
+                wrong += 1
+                print(f"WRONG  seed {seed}, record {number}: {error}")
+            marks = {key: rng.choice([None, sorted(rng.sample(range(1, 300), rng.randint(1, 20)))]) for key in inputs if rng.random() < 0.5}
+            try:
+                found = reader.read_back(record.preview(summary, marks))
+                assert found["summary"] == summary, "the summary read back differently with marks"
+                assert ActionRecord.make(found["tool"], found["inputs"], found["actor"]) == record, "a different record was read back with marks"
             except AssertionError as error:
                 wrong += 1
                 print(f"WRONG  seed {seed}, record {number}: {error}")

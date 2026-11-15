@@ -4,6 +4,10 @@ One SQLite file. Every change happens inside a write transaction that takes the
 file's write lock first (BEGIN IMMEDIATE), so two workers, threads or processes
 sharing the file cannot both use the same yes.
 
+The file also keeps a mark for each input value an approved action has run with,
+so the checkpoint can tell a human when a watched value is new. A mark is a hash,
+not the value.
+
 The log is append-only and chained: each entry stores a hash of itself and of the
 entry before it. verify_log() finds an entry that was edited, removed from the
 middle or reordered. It cannot find entries cut from the end. It does not stop
@@ -50,6 +54,7 @@ CREATE TABLE IF NOT EXISTS log (
     prev_hash TEXT NOT NULL,
     hash TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS seen (mark TEXT PRIMARY KEY, first_at REAL NOT NULL);
 """
 
 GENESIS = "0" * 64
@@ -105,6 +110,12 @@ class Transaction:
             (to_state, *fields.values(), request_id, *from_states),
         )
         return cursor.rowcount == 1
+
+    def seen(self, mark: str) -> bool:
+        return self._connection.execute("SELECT 1 FROM seen WHERE mark = ?", (mark,)).fetchone() is not None
+
+    def mark_seen(self, mark: str, at: float) -> None:
+        self._connection.execute("INSERT OR IGNORE INTO seen (mark, first_at) VALUES (?, ?)", (mark, float(at)))
 
     def log(self, at: float, event: str, request_id=None, tool=None, fingerprint=None, detail: Optional[dict] = None) -> None:
         at = float(at)  # the hash is made from the same number SQLite will hand back
@@ -163,6 +174,9 @@ class Store:
                 return self._connection.execute(sql, args).fetchall()
             except (sqlite3.Error, OSError) as error:
                 raise StoreError(f"the checkpoint store is not available: {error}") from None
+
+    def seen(self, mark: str) -> bool:
+        return bool(self.read("SELECT 1 FROM seen WHERE mark = ?", (mark,)))
 
     def log_entries(self) -> list[dict]:
         entries = []

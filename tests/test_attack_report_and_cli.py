@@ -7,7 +7,7 @@ import pytest
 
 from kettle.attacktest import KETTLE, NONE, load_cases, run_test, save_report, to_markdown
 from kettle.attacktest import __main__ as cli
-from kettle.attacktest import claude_agent, standins
+from kettle.attacktest import claude_agent, openai_agent, standins
 
 CASES = load_cases()
 
@@ -108,7 +108,9 @@ def test_list_names_every_case(capsys):
     assert all(case.id in out for case in CASES.cases()) and "6 normal jobs, 12 attacks" in out
 
 
-def test_the_fraud_set_can_be_asked_for_by_name(capsys):
+def test_the_fraud_set_can_be_asked_for_by_name(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(claude_agent, "ClaudeAgent", NoClaude)
+    monkeypatch.chdir(tmp_path)  # so a .env in the folder the tests are run from is never read
     assert cli.main(["--list", "--cases", "fraud"]) == 0
     out = capsys.readouterr().out
     assert "kettle-fraud-1: 7 normal jobs, 7 attacks" in out and "attack-email-lookalike" in out and "attack-file-gift" not in out
@@ -196,7 +198,18 @@ def test_the_key_comes_from_the_file_unless_asked_otherwise(monkeypatch, capsys,
         ("# a comment\nOTHER=1\nANTHROPIC_API_KEY='abc'\n", "abc"),
         ("ANTHROPIC_API_KEY=", None),
         ("MY_ANTHROPIC_API_KEY=abc", None),
+        ("ANTHROPIC_API_KEY_2=abc", None),
         ("", None),
+        ("ANTHROPIC_API_KEY = abc", "abc"),
+        ("\ufeffANTHROPIC_API_KEY=abc", "abc"),  # a file saved with a byte order mark
+        ("ANTHROPIC_API_KEY=abc # the work key", "abc"),
+        ('ANTHROPIC_API_KEY="abc" # the work key', "abc"),
+        ("ANTHROPIC_API_KEY='a b#c' # the work key", "a b#c"),
+        ("ANTHROPIC_API_KEY=ab#c", "ab#c"),
+        ("ANTHROPIC_API_KEY= # nothing yet", None),
+        ("ANTHROPIC_API_KEY=\nANTHROPIC_API_KEY=abc\n", "abc"),  # an empty line for it does not hide a later one
+        ("ANTHROPIC_API_KEY=old\nANTHROPIC_API_KEY=new\n", "new"),
+        ("ANTHROPIC_API_KEY=abc\r\nOTHER=1\r\n", "abc"),
     ],
 )
 def test_reading_the_key_file(tmp_path, text, expected):
@@ -204,6 +217,173 @@ def test_reading_the_key_file(tmp_path, text, expected):
     path.write_text(text, encoding="utf-8")
     assert cli._key_from_file(str(path)) == expected
     assert cli._key_from_file(str(tmp_path / "missing")) is None
+
+
+@pytest.mark.parametrize("data", ["ANTHROPIC_API_KEY=abc".encode("utf-16"), b"NOTE=caf\xe9\nANTHROPIC_API_KEY=abc\n"])
+def test_a_key_file_that_is_not_utf8_text_gives_no_key_and_does_not_stop_the_command(monkeypatch, capsys, tmp_path, data):
+    (tmp_path / ".env").write_bytes(data)
+    assert cli._key_from_file(str(tmp_path / ".env")) is None
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(claude_agent, "ClaudeAgent", NoClaude)
+    assert cli.main(["--claude", "--yes", "--repeats", "1", "--only", "job-meeting-time"]) == 2
+    assert "No ANTHROPIC_API_KEY found in .env. Nothing has been run." in capsys.readouterr().err
+
+
+class SendsTheKeyBack:
+    """An agent whose API puts the key in its error message, as some do when the key is wrong."""
+
+    def __init__(self, model, api_key=None, base_url=None):
+        self.api_key, self.settings = api_key, {"model": model, "api_address": "https://api.example.test/"}
+        self.api_calls = self.input_tokens = self.output_tokens = 0
+
+    def __call__(self, task, tools):
+        raise RuntimeError(f"Error code: 401 - Incorrect API key provided: {self.api_key}.")
+
+
+@pytest.mark.parametrize(
+    "module, name, args, key",
+    [
+        (claude_agent, "ClaudeAgent", ["--claude"], "key-in-the-file"),
+        (openai_agent, "OpenAIAgent", ["--openai", "--model", "some-model"], "key-in-the-file"),
+        (openai_agent, "OpenAIAgent", ["--openai", "--model", "some-model", "--base-url", "http://127.0.0.1:1/v1", "--key-name", "OTHER_KEY"], "other-key-in-the-file"),
+    ],
+)
+def test_a_key_that_an_api_sends_back_in_an_error_is_not_written_to_the_report(monkeypatch, capsys, tmp_path, module, name, args, key):
+    monkeypatch.setattr(module, name, SendsTheKeyBack)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=key-in-the-file\nOPENAI_API_KEY=key-in-the-file\nOTHER_KEY=other-key-in-the-file\n", encoding="utf-8")
+    assert cli.main(args + ["--yes", "--repeats", "1", "--only", "job-meeting-time"]) == 0
+    captured = capsys.readouterr()
+    (folder,) = (tmp_path / "runs").iterdir()
+    results, report = (folder / "results.json").read_text(encoding="utf-8"), (folder / "report.md").read_text(encoding="utf-8")
+    assert key not in results and key not in report and key not in captured.out and key not in captured.err
+    errors = [run["error"] for run in json.loads(results)["runs"]]
+    assert errors and all(error == f"RuntimeError: Error code: 401 - Incorrect API key provided: {cli.KEY_REMOVED}." for error in errors)
+
+
+class NoOpenAI:
+    def __init__(self, *args, **kwargs):
+        raise AssertionError("the OpenAI agent must not be made here")
+
+
+def test_openai_does_nothing_without_a_model_or_without_yes(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(openai_agent, "OpenAIAgent", NoOpenAI)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("OPENAI_API_KEY=key-in-the-file\n", encoding="utf-8")
+    assert cli.main(["--openai", "--yes"]) == 2
+    assert "--openai needs --model" in capsys.readouterr().err  # there is no default model to fall back on
+    assert cli.main(["--openai", "--model", "some-model"]) == 0
+    out = capsys.readouterr().out
+    assert "some-model at https://api.openai.com/v1 180 times" in out and "Nothing has been run" in out and not (tmp_path / "runs").exists()
+    assert cli.main(["--openai", "--model", "some-model", "--base-url", "http://127.0.0.1:9/v1", "--repeats", "1", "--only", "attack-file-gift"]) == 0
+    assert "some-model at http://127.0.0.1:9/v1 2 times" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        cli.main(["--openai", "--claude", "--model", "some-model"])
+
+
+def test_openai_with_yes_but_no_key_runs_nothing(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(openai_agent, "OpenAIAgent", NoOpenAI)
+    monkeypatch.setenv("OPENAI_API_KEY", "a-key-from-somewhere-else")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=a-key-for-another-api\n", encoding="utf-8")
+    assert cli.main(["--openai", "--model", "some-model", "--yes"]) == 2
+    assert "No OPENAI_API_KEY found in .env" in capsys.readouterr().err
+    assert cli.main(["--openai", "--model", "some-model", "--yes", "--base-url", "http://127.0.0.1:9/v1", "--key-name", "OTHER_KEY"]) == 2
+    assert "No OTHER_KEY found in .env" in capsys.readouterr().err
+
+
+class FakeOpenAI:
+    made = []
+
+    def __init__(self, model, api_key=None, base_url=None):
+        self.model, self.api_key, self.base_url = model, api_key, base_url
+        self.settings = {"model": model, "api_address": base_url}
+        self.api_calls, self.input_tokens, self.output_tokens = 3, 1200, 340
+        FakeOpenAI.made.append(self)
+
+    def __call__(self, task, tools):
+        return "I could not do that."
+
+
+@pytest.fixture
+def fake_openai(monkeypatch, tmp_path):
+    FakeOpenAI.made.clear()
+    monkeypatch.setattr(openai_agent, "OpenAIAgent", FakeOpenAI)
+    monkeypatch.setenv("OPENAI_API_KEY", "key-in-the-environment")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://somewhere-else.example/v1")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=a-key-for-another-api\nOPENAI_API_KEY=key-in-the-file\nOTHER_KEY=other-key-in-the-file\n", encoding="utf-8")
+    return ["--openai", "--yes", "--repeats", "1", "--only", "job-meeting-time", "--model", "some-model"]
+
+
+@pytest.mark.parametrize("extra, expected", [([], "key-in-the-file"), (["--key-from-env"], "key-in-the-environment")])
+def test_the_openai_key_comes_from_the_file_unless_asked_otherwise(fake_openai, capsys, tmp_path, extra, expected):
+    assert cli.main(fake_openai + extra) == 0
+    (agent,) = FakeOpenAI.made
+    # The address is always given, so a setting in the shell cannot send the key somewhere else.
+    assert (agent.api_key, agent.model, agent.base_url) == (expected, "some-model", "https://api.openai.com/v1")
+    captured = capsys.readouterr()
+    assert expected not in captured.out and expected not in captured.err  # the key is never printed
+    assert "Calling the API at https://api.openai.com/v1" in captured.out  # where the key is sent is
+    (folder,) = (tmp_path / "runs").iterdir()
+    saved = json.loads((folder / "results.json").read_text(encoding="utf-8"))
+    assert saved["meta"]["usage"] == {"api_calls": 3, "input_tokens": 1200, "output_tokens": 340}
+    assert saved["meta"]["agent"] == "Plain agent on the OpenAI chat API (some-model)"
+    report = (folder / "report.md").read_text(encoding="utf-8")
+    assert "1200 input tokens" in report
+    for file in ("results.json", "report.md"):
+        text = (folder / file).read_text(encoding="utf-8")
+        assert "key-in-the" not in text and "a-key-for-another-api" not in text
+
+
+@pytest.mark.parametrize("extra", [[], ["--key-from-env"]])
+def test_a_key_stored_for_openai_is_not_sent_to_another_address(fake_openai, capsys, extra):
+    assert cli.main(fake_openai + ["--base-url", "http://127.0.0.1:9/v1"] + extra) == 0
+    (agent,) = FakeOpenAI.made
+    assert (agent.api_key, agent.base_url) == ("no-key", "http://127.0.0.1:9/v1")
+    out = capsys.readouterr().out
+    assert "No key is sent to http://127.0.0.1:9/v1" in out and "--key-name" in out
+
+
+@pytest.mark.parametrize(
+    "extra, expected",
+    [
+        (["--key-name", "OTHER_KEY"], "other-key-in-the-file"),
+        (["--key-name", "OPENAI_API_KEY"], "key-in-the-file"),  # asked for by name, so it is sent
+        (["--key-name", "OPENAI_API_KEY", "--key-from-env"], "key-in-the-environment"),
+    ],
+)
+def test_another_address_gets_only_the_key_that_was_named(fake_openai, capsys, extra, expected):
+    assert cli.main(fake_openai + ["--base-url", "http://127.0.0.1:9/v1"] + extra) == 0
+    (agent,) = FakeOpenAI.made
+    assert (agent.api_key, agent.base_url) == (expected, "http://127.0.0.1:9/v1")
+    captured = capsys.readouterr()
+    assert expected not in captured.out and expected not in captured.err and "No key is sent" not in captured.out
+
+
+@pytest.mark.parametrize("typed", ["sk-proj-abc123", "other_key", "KEY NAME", "1KEY", ""])
+def test_a_key_typed_where_its_name_belongs_is_not_used_or_printed_back(fake_openai, capsys, typed):
+    assert cli.main(fake_openai + ["--key-name", typed]) == (2 if typed else 0)
+    captured = capsys.readouterr()
+    if typed:
+        assert FakeOpenAI.made == [] and "not the key itself" in captured.err and typed not in captured.err and typed not in captured.out
+
+
+def test_openai_without_the_package_says_how_to_get_it(fake_openai, monkeypatch, capsys):
+    def missing(*args, **kwargs):
+        raise ImportError("No module named 'openai'")
+
+    monkeypatch.setattr(openai_agent, "OpenAIAgent", missing)
+    assert cli.main(fake_openai) == 2
+    assert 'pip install "kettle-labs[openai]"' in capsys.readouterr().err
+
+
+def test_reading_a_key_file_by_another_name(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("ANTHROPIC_API_KEY=one\nexport OPENAI_API_KEY='two'\nOPENAI_API_KEY_OLD=three\n", encoding="utf-8")
+    assert cli._key_from_file(str(path)) == "one"
+    assert cli._key_from_file(str(path), "OPENAI_API_KEY") == "two"
+    assert cli._key_from_file(str(path), "OPENAI") is None
 
 
 def test_running_your_own_agent_writes_a_report(monkeypatch, capsys, tmp_path):

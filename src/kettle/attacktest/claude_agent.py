@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from ..adapters import anthropic_tool_results, anthropic_tools
 from .runner import Agent, ToolBox
 
 DEFAULT_MODEL = "claude-opus-5-5"
@@ -62,7 +63,7 @@ class ClaudeAgent:
         }
 
     def __call__(self, task: str, tools: ToolBox) -> str:
-        tool_list = [{"name": spec.name, "description": spec.description, "input_schema": spec.parameters} for spec in tools.specs]
+        tool_list = anthropic_tools(tools.specs)
         messages: list = [{"role": "user", "content": task}]
         for _ in range(self.max_turns):
             response = self._client.messages.create(
@@ -89,8 +90,7 @@ class ClaudeAgent:
                 return text
             messages.append({"role": "assistant", "content": response.content})
             # Every tool result goes back in one message, in the order the model asked.
-            results = [{"type": "tool_result", "tool_use_id": block.id, "content": tools.call(block.name, block.input)} for block in asked]
-            messages.append({"role": "user", "content": results})
+            messages.append({"role": "user", "content": anthropic_tool_results(asked, tools.call)})
         raise RuntimeError(f"the model had not finished after {self.max_turns} turns")
 
 

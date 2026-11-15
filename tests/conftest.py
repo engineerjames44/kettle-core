@@ -4,9 +4,42 @@ The World is the outside world. Its tools write down every time they really run.
 A test passes or fails on what the World saw, not on what the checkpoint says.
 """
 
+import socket
+
 import pytest
 
 from kettle import FREE, NEEDS_YES, NEVER, Checkpoint
+
+THIS_MACHINE = ("127.0.0.1", "::1", "localhost")
+
+
+def _on_this_machine(host) -> bool:
+    if isinstance(host, bytes):
+        host = host.decode("ascii", "replace")
+    return host is None or host == "" or host in THIS_MACHINE or str(host).startswith("127.")
+
+
+@pytest.fixture(autouse=True)
+def nothing_leaves_this_machine(monkeypatch):
+    """No test can reach another machine, so no test can call a paid API.
+
+    The break checks take guards out of a copy of the code on purpose and then run these tests.
+    This holds even then, and even when a real key is sitting in a .env file nearby.
+    """
+    real_connect, real_lookup = socket.socket.connect, socket.getaddrinfo
+
+    def connect(self, address, *rest):
+        if self.family in (socket.AF_INET, socket.AF_INET6) and not _on_this_machine(address[0]):
+            raise AssertionError(f"the tests stay on this machine, and this one tried to reach {address[0]}")
+        return real_connect(self, address, *rest)
+
+    def lookup(host, *rest, **more):
+        if not _on_this_machine(host):
+            raise AssertionError(f"the tests stay on this machine, and this one tried to look up {host}")
+        return real_lookup(host, *rest, **more)
+
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    monkeypatch.setattr(socket, "getaddrinfo", lookup)
 
 
 class World:

@@ -41,6 +41,7 @@ class Tool:
     describe: Optional[Callable[[dict], str]] = None
     signature: Optional[inspect.Signature] = None
     fixed: frozenset = frozenset()  # input names the app has already filled in; a caller may not give them
+    watch: tuple = ()  # input names whose value is marked in the preview the first time it is seen
 
 
 def _read_signature(name: str, run: Callable[..., Any]) -> tuple[inspect.Signature, frozenset]:
@@ -77,6 +78,24 @@ def _read_signature(name: str, run: Callable[..., Any]) -> tuple[inspect.Signatu
     return signature, frozenset(fixed)
 
 
+def _read_watch(name: str, watch: Any, signature: Optional[inspect.Signature], fixed: frozenset) -> tuple:
+    """The inputs to watch, checked at setup, so a misspelt name is found then and not by a missing mark."""
+    if type(watch) not in (tuple, list):
+        raise RulesError(f'{name}: watch must be a list of input names, such as ["to"]')
+    if not watch:
+        return ()
+    if signature is None:
+        raise RulesError(f"{name}: a tool with no function to run has no inputs to watch")
+    takes_any = any(p.kind is p.VAR_KEYWORD for p in signature.parameters.values())
+    by_name = {p.name for p in signature.parameters.values() if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)}
+    for key in watch:
+        if type(key) is not str or not key:
+            raise RulesError(f"{name}: watch must be a list of input names")
+        if key in fixed or not (takes_any or key in by_name):
+            raise RulesError(f"{name}: watch names {key!r}, which is not an input a caller can give to its function")
+    return tuple(sorted(set(watch)))
+
+
 class Rules:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
@@ -89,6 +108,7 @@ class Rules:
         level: Level,
         describe: Optional[Callable[[dict], str]] = None,
         replace: bool = False,
+        watch: Any = (),
     ) -> Tool:
         if type(name) is not str or not name:
             raise RulesError("a tool name must be non-empty text")
@@ -103,7 +123,8 @@ class Rules:
         if describe is not None and not callable(describe):
             raise RulesError(f"{name}: describe must be a function")
         signature, fixed = (None, frozenset()) if run is None else _read_signature(name, run)
-        tool = Tool(name=name, run=run, level=level, describe=describe, signature=signature, fixed=fixed)
+        watch = _read_watch(name, watch, signature, fixed)
+        tool = Tool(name=name, run=run, level=level, describe=describe, signature=signature, fixed=fixed, watch=watch)
         self._tools[name] = tool
         return tool
 
@@ -149,13 +170,15 @@ class Rules:
         """A short fingerprint of the tool list and levels, for run records.
 
         A level that is a function is written as its name, so the digest shows
-        that a rule function is in use but not what the function does.
+        that a rule function is in use but not what the function does. Watched
+        inputs are written only for a tool that has some.
         """
         listed = []
         for name in self.names():
             level = self._tools[name].level
             if callable(level):
                 level = "rule:" + getattr(level, "__qualname__", type(level).__name__)
-            listed.append([name, level])
+            watch = self._tools[name].watch
+            listed.append([name, level, list(watch)] if watch else [name, level])
         text = json.dumps(listed, separators=(",", ":"), ensure_ascii=True)
         return hashlib.sha256(text.encode("ascii")).hexdigest()[:16]

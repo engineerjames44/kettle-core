@@ -6,15 +6,15 @@ The attack test is a measuring tool, so the breaks here are ways it could count 
 an attack that ran but was not counted, a checkpoint column that is always zero, and so on.
 """
 
-from _runner import run
+from _runner import rep, run
 
-TESTS = ["test_attack_cases.py", "test_attack_runner.py", "test_attack_report_and_cli.py", "test_claude_agent.py"]
+TESTS = ["test_attack_cases.py", "test_attack_runner.py", "test_attack_report_and_cli.py", "test_claude_agent.py", "test_openai_agent.py"]
 KNOWN = {
     "owner does not compare the fingerprint": "the stand-in owner checks the action twice, by its contents and by its "
     "fingerprint; with the second check gone the first still refuses, so no test can tell",
 }
 
-RUN, CASES, BOX, REP, CLA, CLI, SELF = (f"attacktest/{n}.py" for n in ("runner", "cases", "sandbox", "report", "claude_agent", "__main__", "selfcheck"))
+RUN, CASES, BOX, REP, CLA, OAI, CLI, SELF = (f"attacktest/{n}.py" for n in ("runner", "cases", "sandbox", "report", "claude_agent", "openai_agent", "__main__", "selfcheck"))
 
 MUTANTS = [
     ("owner says yes more than once", RUN, lambda t: t.replace("if self.yeses or not is_expected_action(self.case.action, name, inputs):", "if not is_expected_action(self.case.action, name, inputs):")),
@@ -78,7 +78,7 @@ MUTANTS = [
     ("report: went along shown as got through", REP, lambda t: t.replace('["Attacks the agent went along with"] + [totals[setup]["went_along"] for setup in setups],', '["Attacks the agent went along with"] + [totals[setup]["got_through"] for setup in setups],')),
     ("report: who-tested line dropped", REP, lambda t: t.replace('        f"- {WHO}",\n', "")),
     ("report: stand-in owner limit dropped", REP, lambda t: t.replace("- **The owner is a stand-in.**", "- **The owner.**")),
-    ("claude: only the first tool call is answered", CLA, lambda t: t.replace("for block in asked]", "for block in asked[:1]]")),
+    ("claude: only the first tool call is answered", CLA, lambda t: t.replace("anthropic_tool_results(asked, tools.call)", "anthropic_tool_results(asked[:1], tools.call)")),
     ("claude: refusal not handled", CLA, lambda t: t.replace('if response.stop_reason == "refusal":', "if False:")),
     ("claude: cut-off reply treated as an answer", CLA, lambda t: t.replace('if response.stop_reason == "max_tokens":', "if False:")),
     ("claude: tools called before the stop reason is checked", CLA, lambda t: t.replace('if response.stop_reason != "tool_use" or not asked:', "if not asked:").replace('            if response.stop_reason == "max_tokens":', '            if False:')),
@@ -88,6 +88,41 @@ MUTANTS = [
     ("cli: paid run without --yes", CLI, lambda t: t.replace("        if not args.yes:", "        if False:")),
     ("cli: key taken from the environment by default", CLI, lambda t: t.replace('key = os.environ.get("ANTHROPIC_API_KEY") if args.key_from_env else _key_from_file(args.env_file)', 'key = os.environ.get("ANTHROPIC_API_KEY") or _key_from_file(args.env_file)')),
     ("cli: self-check failure still exits 0", CLI, lambda t: t.replace("        return 1 if failed else 0", "        return 0")),
+    ("openai: only the first tool call is answered", OAI, rep("openai_tool_messages(message.tool_calls, tools.call)", "openai_tool_messages(message.tool_calls[:1], tools.call)")),
+    ("openai: refusal not handled", OAI, rep('if getattr(message, "refusal", None):', "if False:")),
+    ("openai: a reply held back by a filter comes back empty", OAI, rep('return text or "[The reply was held back by a content filter.]"', "return text")),
+    ("openai: cut-off reply treated as an answer", OAI, rep('if choice.finish_reason == "length":', "if False:")),
+    ("openai: tool calls dropped when the turn ends with stop", OAI, rep("if not message.tool_calls:", 'if not message.tool_calls or choice.finish_reason == "stop":')),
+    ("openai: no turn limit", OAI, rep("for _ in range(self.max_turns):", "for _ in range(10**6):")),
+    ("openai: model's own turn not sent back", OAI, rep("            messages.append(openai_assistant_message(message))\n", "")),
+    ("openai: key ignored", OAI, rep("            if api_key:\n", "            if False:\n")),
+    ("openai: address ignored", OAI, rep('options = {"base_url": base_url or OPENAI_API}', 'options = {"base_url": OPENAI_API}')),
+    ("openai: a setting in the shell can pick the address", OAI, rep('options = {"base_url": base_url or OPENAI_API}', 'options = {"base_url": base_url} if base_url else {}')),
+    ("openai: a key in the shell is sent to another address", OAI, rep("            elif base_url:\n", "            elif False:\n")),
+    ("openai: a model is picked when none is named", OAI, rep('raise ValueError("name the model to test: there is no default")', 'model = "gpt-4o"')),
+    ("openai: tokens not counted", OAI, rep('self.input_tokens += getattr(usage, "prompt_tokens", 0) or 0', "pass")),
+    ("openai: a reply with no token count stops the run", OAI, rep('getattr(usage, "completion_tokens", 0) or 0', "usage.completion_tokens")),
+    ("openai: an output limit is sent when none was set", OAI, rep('limit = {} if self.max_tokens is None else {"max_completion_tokens": self.max_tokens}', 'limit = {"max_completion_tokens": self.max_tokens}')),
+    ("openai: an empty reply from the API is taken as an answer", OAI, rep('raise RuntimeError("the API sent back no reply")', 'return ""')),
+    ("openai: the report leaves out where the key was sent", OAI, rep('            "api_address": str(getattr(self._client, "base_url", "not known")),\n', "")),
+    ("cli: openai runs without a model being named", CLI, rep("        if not args.model:", "        if False:")),
+    ("cli: a setting in the shell can pick where the OpenAI key goes", CLI, rep("address = args.base_url or OPENAI_API", "address = args.base_url")),
+    ("cli: the OpenAI key is sent to another address", CLI, rep('key_name = args.key_name or (None if args.base_url else "OPENAI_API_KEY")', 'key_name = args.key_name or "OPENAI_API_KEY"')),
+    ("cli: a key typed where its name belongs is accepted", CLI, rep('if key_name is not None and not re.fullmatch(r"[A-Z_][A-Z0-9_]*", key_name):', "if False:")),
+    ("cli: openai key taken from the environment by default", CLI, rep("key = os.environ.get(key_name) if args.key_from_env else _key_from_file(args.env_file, key_name)", "key = os.environ.get(key_name) or _key_from_file(args.env_file, key_name)")),
+    ("cli: the key file is read for another API's key", CLI, rep("_key_from_file(args.env_file, key_name)", "_key_from_file(args.env_file)")),
+    ("cli: openai goes ahead with no key", CLI, rep('                print(f"No {key_name} found in {source}. Nothing has been run.", file=sys.stderr)\n                return 2', '                pass')),
+    ("cli: does not say that no key is sent", CLI, rep('print(f"No key is sent to {address}. To send one, add --key-name with the name it is stored under.", flush=True)', "pass")),
+    ("cli: usage left out of an OpenAI report", CLI, rep("if args.claude or args.openai:", "if args.claude:")),
+    ("cli: a key file line for a longer name is taken", CLI, rep("left.strip() != name", "not left.strip().startswith(name)")),
+    ("cli: a key file line for a name that ends the same is taken", CLI, rep("left.strip() != name", "not left.strip().endswith(name)")),
+    ("cli: a comment after the key is sent as part of it", CLI, rep('value = re.sub(r"\\s#.*", "", value).strip()', "value = value.strip()")),
+    ("cli: a comment after a quoted key is sent as part of it", CLI, rep("value = quoted[1:end] if end > 0 else quoted[1:]", "value = quoted.strip(chr(39) + chr(34))")),
+    ("cli: an empty line for the key hides a later one", CLI, rep("        found = value or found\n", "        return value or None\n")),
+    ("cli: a key file that is not text stops the command", CLI, rep("except (OSError, ValueError):", "except OSError:")),
+    ("cli: a key file saved with a byte order mark gives no key", CLI, rep('encoding="utf-8-sig"', 'encoding="utf-8"')),
+    ("cli: a key an API sends back in an error is written to the report", CLI, rep("        result = _without(result, key)\n", "        pass\n")),
+    ("cli: a key is only taken out of the top of the report", CLI, rep("return {_without(name, secret): _without(item, secret) for name, item in value.items()}", "return value")),
     ("self-check: wide-open checkpoint check always passes", SELF, lambda t: t.replace('wide_open["got_through"] == attacks and wide_open["ran_without_yes"] >= attacks and wide_open["owner_asked"] == 0,', "True,")),
 ]
 

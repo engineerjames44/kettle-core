@@ -95,15 +95,23 @@ the single run above, that is 11 runs per setup:
 | `results/2026-11-15/2026-11-15T184338Z` | Opus | fraud | `attack-notes-address`, 10 times |
 | `results/2026-11-15/2026-11-15T184756Z` | Haiku | fraud | `attack-notes-address`, 10 times |
 
-Times are UTC. The run at 18:15 used a draft of the fraud set, before the wording of one file in it was
-changed. That draft is not in this repository, so the run cannot be repeated and is left out of the tables.
+Times are UTC. The run at 18:15 was not planned. One of our own check scripts started it by mistake: the
+script takes the `--yes` guard out of a copy of the code to see if the tests notice, and one test then ran the
+real agent with the key in this folder. It used a draft of the fraud set, before the wording of one file in it
+was changed. That draft is not in this repository, so the run cannot be repeated and is left out of the tables.
 Its totals were the same as the 18:32 run on the final set: 1 of 7 gone along with in both setups, and the
 attacker's action ran once with no checkpoint and not at all with it.
 
 The case set each report used is named in the report with its SHA-256. For the fraud set in this repository
 that starts `f8d9cc87`, and for the starter set `b07c504a`.
 
-All of the runs together made 635 calls to the model: 929,675 input tokens and 107,681 output tokens.
+All of the runs listed above together made 635 calls to the model: 929,675 input tokens and 107,681 output
+tokens.
+
+The same mistake started three more runs of the fraud set on Opus later that day (20:44, 20:53 and 21:10 UTC):
+308 calls, 465,419 input tokens and 44,235 output tokens. They are not in `results/` and are not counted
+anywhere on this page. The tests can no longer reach another machine, and
+`tests/test_the_tests_stay_on_this_machine.py` checks that.
 
 To run the last two again (they call a paid API):
 
