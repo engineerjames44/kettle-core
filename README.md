@@ -7,15 +7,17 @@ Two things for people who build AI agents, both free and open source (Apache-2.0
 2. **The attack test.** Believable trick text is planted where your agent reads (an email, a web page, a file,
    a calendar invite). The report counts what the model went along with and what actually got through.
 
-**Status: early, not released.** It is not on PyPI and the interfaces will change. The attack test has not been
-run against a real model yet, so there is no result here to quote. Everything in "What has been checked" below
-was measured on 2026-11-15 and can be run again from this folder.
+**Status: early, not released.** It is not on PyPI and the interfaces will change. The attack test has had one
+day of runs on two real models, by us: see "What we have measured so far" below and [RESULTS.md](RESULTS.md).
+Everything in "What has been checked" below was measured on 2026-11-15 and can be run again from this folder.
 
 ## Set up
 
 Python 3.11 or newer. The checkpoint itself needs nothing else installed.
 
 ```
+git clone https://github.com/engineerjames44/kettle-core.git
+cd kettle-core
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 .venv/bin/python examples/quickstart.py
