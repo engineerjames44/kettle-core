@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kettle-labs"
+version = "0.0.1"
+description = "A checkpoint in plain code that holds an agent's risky actions for a human yes, and an attack test that counts what gets through."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+claude = ["anthropic>=2.6,<3"]
+dev = ["pytest>=8"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kettle"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
