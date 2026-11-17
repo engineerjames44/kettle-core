@@ -1,0 +1,762 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="demo-token" content="{{TOKEN}}">
+<title>Kettle Labs: live demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,400..700,0..100,0..1&family=Figtree:wght@400..600&family=JetBrains+Mono:wght@400..500&display=swap" rel="stylesheet">
+<style>
+/* The page for approve_in_browser.py. It draws what the checkpoint returns and decides nothing itself. */
+:root {
+  --bg: #15130f; --surface: #1e1b16; --raised: #27231b; --ink: #f1eadc; --muted: #aca69b; --faint: #7f796e;
+  --line: rgba(241, 234, 220, .09); --line-strong: rgba(241, 234, 220, .2);
+  --accent: #e8894f; --accent-ink: #15130f; --ok: #a9c793; --stop: #e8786a;
+  --display: "Fraunces", Georgia, serif; --text: "Figtree", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --r: 6px; --ease: cubic-bezier(.2, .8, .2, 1);
+}
+* { box-sizing: border-box; }
+html { background: var(--bg); color-scheme: dark; }
+body { margin: 0; color: var(--ink); font: 16px/1.5 var(--text); -webkit-font-smoothing: antialiased;
+  background: radial-gradient(900px 480px at 78% -120px, rgba(232, 137, 79, .13), transparent 70%), var(--bg); min-height: 100vh; }
+a { color: inherit; }
+p, h1, h2, h3, ol, ul { margin: 0; padding: 0; }
+ol, ul { list-style: none; }
+button { font: inherit; color: inherit; }
+.wrap { max-width: 1320px; margin: 0 auto; padding: 0 32px; }
+@media (max-width: 700px) { .wrap { padding: 0 16px; } }
+.label { font: 500 12px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.mono { font-family: var(--mono); }
+
+/* header */
+.top { display: flex; align-items: center; gap: 16px; height: 68px; }
+.brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; font: 500 17px/1 var(--text); letter-spacing: -.01em; }
+.brand svg { width: 26px; height: 26px; }
+.top__tag { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 999px; font: 500 12px/1 var(--mono); color: var(--muted); }
+.live { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 0 rgba(232, 137, 79, .6); animation: pulse 2.2s infinite; }
+@keyframes pulse { 70% { box-shadow: 0 0 0 7px rgba(232, 137, 79, 0); } 100% { box-shadow: 0 0 0 0 rgba(232, 137, 79, 0); } }
+.top__sp { flex: 1; }
+.cmd { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: var(--r); font: 500 13px/1 var(--mono); white-space: nowrap; }
+.cmd span { color: var(--faint); user-select: none; -webkit-user-select: none; }
+.cmd code { font: inherit; user-select: all; -webkit-user-select: all; }
+.top__link { font-size: 14px; color: var(--muted); text-decoration: none; }
+.top__link:hover { color: var(--ink); }
+@media (max-width: 700px) { .top .cmd, .top__link { display: none; } }
+
+/* intro */
+.intro { padding: 28px 0 28px; }
+h1 { font: 400 clamp(34px, 3.4vw + 12px, 60px)/1.04 var(--display); letter-spacing: -.024em; font-variation-settings: "SOFT" 30, "WONK" 0; max-width: 17ch; }
+h1 em { font-style: normal; color: var(--accent); }
+.intro__row { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 48px; align-items: end; }
+.lead { font-size: 18px; color: var(--muted); max-width: 46ch; }
+.facts { display: grid; gap: 8px; margin-top: 18px; font-size: 14px; color: var(--muted); }
+.facts li { display: flex; gap: 10px; align-items: baseline; }
+.facts b { color: var(--ink); font-weight: 500; }
+.facts li::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); transform: translateY(-2px); }
+@media (max-width: 900px) { .intro__row { grid-template-columns: 1fr; gap: 20px; } }
+
+/* story tabs */
+.tabs { display: inline-flex; gap: 4px; margin-top: 28px; padding: 4px; border: 1px solid var(--line-strong); border-radius: 10px; background: rgba(30, 27, 22, .7); }
+.tab { height: 40px; padding: 0 18px; border: 0; border-radius: var(--r); background: transparent; color: var(--muted); font: 500 15px/1 var(--text); cursor: pointer; transition: background .18s var(--ease), color .18s var(--ease); }
+.tab:hover { color: var(--ink); }
+.tab[aria-selected="true"] { background: var(--ink); color: var(--bg); }
+.tab:disabled { cursor: default; opacity: .5; }
+@media (max-width: 600px) { .tabs { display: grid; grid-template-columns: 1fr 1fr; } .tab { padding: 0 8px; font-size: 14px; } }
+
+/* the real one: a saved run of a real model, played back */
+.tape { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-top: 16px; font: 400 13px/1.4 var(--mono); color: var(--muted); }
+.tape b { color: var(--ink); font-weight: 500; }
+.tape__runs { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.tape__runs button { min-width: 32px; height: 32px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 4px; background: transparent; font: 500 12px/1 var(--mono); color: var(--muted); cursor: pointer; }
+.tape__runs button:hover { color: var(--ink); border-color: var(--ink); }
+.tape__runs button[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+.tape__runs button:disabled { opacity: .5; cursor: default; }
+.is-rec .pane--you { position: static; background: var(--surface); }
+.job .label + p { margin-bottom: 12px; }
+.job p:last-child { margin-bottom: 0; }
+.doc p.pre { white-space: pre-wrap; font: 400 12.5px/1.6 var(--mono); }
+.doc.is-unread { border-style: dashed; animation: rise .5s var(--ease) both; }
+.step__rec { grid-column: 2 / span 2; margin-top: 6px; font: 400 12px/1.5 var(--mono); color: var(--faint); }
+.step__mail { grid-column: 2 / span 2; margin-top: 10px; }
+.step__mail div { grid-template-columns: 60px minmax(0, 1fr); }
+.step__mail dd { white-space: pre-wrap; }
+.verdict { margin: 0 0 14px; padding: 14px 16px; border: 1px solid var(--tone); border-radius: var(--r); }
+.verdict b { display: block; font: 400 23px/1.2 var(--display); letter-spacing: -.015em; color: var(--tone); }
+.verdict span { display: block; margin-top: 6px; font-size: 14px; color: var(--muted); overflow-wrap: anywhere; }
+.said { margin-bottom: 16px; padding: 14px 16px; border-radius: var(--r); background: var(--raised); }
+.said p { margin-top: 10px; font-size: 14px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.said small { display: block; margin-top: 12px; font: 400 12px/1.4 var(--mono); color: var(--faint); }
+.verdict.is-new, .said.is-new { animation: rise .5s var(--ease) both; }
+
+/* the three panes */
+.console { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr); gap: 16px; align-items: start; padding-bottom: 24px; }
+@media (max-width: 1080px) {  /* middle widths: what it reads across the top, then tries and you side by side */
+  .console { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .pane--reads { grid-column: 1 / -1; }
+  .pane--reads .pane__body { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+  .pane--reads .job { grid-column: 1 / -1; }
+  .pane--reads .doc { margin-top: 0; }
+}
+@media (max-width: 700px) { .console { grid-template-columns: 1fr; } }
+.pane { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; min-height: 420px; }
+@media (max-width: 1080px) { .pane--reads { min-height: 0; } }
+@media (max-width: 700px) { .pane { min-height: 0; } }
+.pane__head { display: flex; align-items: center; gap: 10px; padding: 16px 18px; border-bottom: 1px solid var(--line); }
+.pane__head i { font: 500 12px/1 var(--mono); color: var(--accent); font-style: normal; }
+.pane__head small { margin-left: auto; font: 400 12px/1 var(--mono); color: var(--faint); letter-spacing: 0; text-transform: none; }
+.pane__body { padding: 18px; }
+.pane--you { position: sticky; top: 16px; background: linear-gradient(180deg, rgba(232, 137, 79, .07), transparent 180px), var(--surface); }
+@media (max-width: 700px) { .pane--you { position: static; } }
+.empty { color: var(--faint); font-size: 15px; max-width: 30ch; }
+
+/* what the agent reads */
+.job { padding: 12px 14px; border-radius: var(--r); background: var(--raised); font-size: 15px; }
+.job span { display: block; margin-bottom: 6px; }
+.doc { margin-top: 12px; padding: 14px; border: 1px solid var(--line); border-radius: var(--r); transition: border-color .3s var(--ease), background .3s var(--ease); }
+.doc__top { display: flex; flex-direction: column-reverse; gap: 8px; }
+.doc__from { font: 400 12px/1.4 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.doc__kind { flex: none; font: 500 11px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+.doc h3 { margin: 8px 0 4px; font: 600 15px/1.35 var(--text); }
+.doc p { font-size: 14px; color: var(--muted); overflow-wrap: anywhere; }
+.doc.is-lit { border-color: var(--line-strong); background: rgba(241, 234, 220, .04); }
+.doc.is-planted { border-color: var(--stop); background: rgba(232, 120, 106, .07); }
+.doc__tell { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(232, 120, 106, .35); color: var(--stop) !important; font-weight: 500; }
+
+/* what the agent tries */
+.feed li { position: relative; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 0 12px; padding-bottom: 20px; }
+.feed li::before { content: ""; grid-row: 1 / span 4; width: 9px; height: 9px; margin: 7px 0 0 4px; border-radius: 50%; background: var(--dot, var(--faint)); box-shadow: 0 0 0 4px var(--surface); z-index: 1; }
+.feed li::after { content: ""; position: absolute; left: 8px; top: 12px; bottom: -8px; width: 1px; background: var(--line-strong); }
+.feed li:last-child::after { display: none; }
+.feed li.is-new { animation: rise .45s var(--ease) both; }
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+.step__says { grid-column: 2; font: 500 16px/1.35 var(--text); overflow-wrap: anywhere; }
+.step__chip { grid-column: 3; grid-row: 1; align-self: start; }
+.step__call { grid-column: 2 / span 2; margin-top: 4px; font: 400 12px/1.5 var(--mono); color: var(--faint); overflow-wrap: anywhere; }
+.step__thought { grid-column: 2 / span 2; margin-top: 6px; font-size: 14px; color: var(--muted); }
+.step__thought::before { content: "agent: "; font: 400 12px/1 var(--mono); color: var(--faint); }
+.step__why { grid-column: 2 / span 2; margin-top: 6px; font-size: 14px; color: var(--tone, var(--muted)); }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border: 1px solid currentColor; border-radius: 4px; font: 500 11px/1 var(--mono); letter-spacing: .06em; white-space: nowrap; color: var(--tone, var(--muted)); }
+.t-ok { --tone: var(--ok); --dot: var(--ok); }
+.t-wait { --tone: var(--accent); --dot: var(--accent); }
+.t-stop { --tone: var(--stop); --dot: var(--stop); }
+.feed .t-wait .chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: blink 1.4s infinite; }
+@keyframes blink { 50% { opacity: .25; } }
+.thinking { display: flex; gap: 5px; align-items: center; height: 24px; padding-left: 30px; }
+.thinking span { width: 5px; height: 5px; border-radius: 50%; background: var(--muted); animation: blink 1s infinite; }
+.thinking span:nth-child(2) { animation-delay: .15s; } .thinking span:nth-child(3) { animation-delay: .3s; }
+.go { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 4px; }
+.go p { font-size: 14px; color: var(--muted); }
+
+/* buttons */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 10px; height: 44px; padding: 0 20px; border: 1px solid var(--line-strong); border-radius: var(--r); background: transparent; font: 500 15px/1 var(--text); cursor: pointer; transition: transform .18s var(--ease), background .18s var(--ease), border-color .18s var(--ease); }
+.btn:hover { border-color: var(--ink); }
+.btn:active { transform: translateY(1px); }
+.btn--go { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.btn--go:hover { background: #f09a63; border-color: #f09a63; }
+.btn--go::after { content: "\2192"; transition: transform .18s var(--ease); }
+.btn--go:hover::after { transform: translateX(3px); }
+.btn:disabled { opacity: .55; cursor: default; }
+.btn:disabled::after { display: none; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* what reaches you */
+.card { margin-bottom: 14px; border: 1px solid var(--accent); border-radius: 10px; background: var(--raised); box-shadow: 0 24px 60px -34px rgba(232, 137, 79, .75); overflow: hidden; }
+.card.is-new { animation: arrive .6s var(--ease) both; }
+@keyframes arrive { from { opacity: 0; transform: translateY(14px) scale(.985); } }
+.card__top { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); font: 500 11px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+.card__top time { color: var(--faint); letter-spacing: 0; text-transform: none; }
+.card__main { padding: 16px; }
+.card h3 { font: 400 24px/1.2 var(--display); letter-spacing: -.015em; font-variation-settings: "SOFT" 30, "WONK" 0; overflow-wrap: anywhere; }
+.flag { display: flex; gap: 10px; margin-top: 14px; padding: 10px 12px; border-radius: var(--r); font-size: 14px; line-height: 1.4; }
+.flag b { font-weight: 600; }
+.flag--new { background: var(--accent); color: var(--accent-ink); }
+.flag--new::before { content: "!"; flex: none; width: 20px; height: 20px; border-radius: 50%; background: var(--accent-ink); color: var(--accent); font: 600 13px/20px var(--mono); text-align: center; }
+.flag--seen { padding: 0; color: var(--ok); }
+.inputs { margin-top: 14px; border-top: 1px solid var(--line); }
+.inputs div { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); font: 400 13px/1.45 var(--mono); }
+.inputs dt { color: var(--faint); }
+.inputs dd { margin: 0; overflow-wrap: anywhere; }
+.inputs .is-first dd { color: var(--accent); }
+.card__btns { display: grid; grid-template-columns: 1.4fr 1fr; gap: 10px; margin-top: 16px; }
+.card details { border-top: 1px solid var(--line); }
+.card summary { padding: 12px 16px; font: 400 12px/1.4 var(--mono); color: var(--faint); cursor: pointer; overflow-wrap: anywhere; }
+.card summary:hover { color: var(--muted); }
+.card pre { margin: 0; padding: 0 16px 16px; font: 400 11.5px/1.6 var(--mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.answered li { display: flex; gap: 10px; align-items: baseline; padding: 10px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.answered li:first-child { border-top: 0; }
+.answered b { flex: none; width: 74px; font: 500 11px/1.6 var(--mono); letter-spacing: .06em; color: var(--tone); }
+.answered span { color: var(--muted); overflow-wrap: anywhere; }
+
+/* what just happened */
+.reveal { margin: 8px 0 24px; padding: 40px; border: 1px solid var(--line-strong); border-radius: 10px; background: radial-gradient(700px 300px at 0% 0%, rgba(232, 137, 79, .12), transparent 70%), var(--surface); animation: rise .7s var(--ease) both; }
+@media (max-width: 700px) { .reveal { padding: 24px 18px; } }
+.reveal h2 { margin-top: 14px; font: 400 clamp(28px, 2.4vw + 10px, 46px)/1.08 var(--display); letter-spacing: -.022em; font-variation-settings: "SOFT" 30, "WONK" 0; max-width: 22ch; }
+.reveal__sub { margin-top: 12px; color: var(--muted); font-size: 18px; max-width: 60ch; }
+.versus { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 32px; }
+@media (max-width: 800px) { .versus { grid-template-columns: 1fr; } }
+.side { padding: 20px; border: 1px solid var(--line); border-radius: var(--r); background: var(--bg); }
+.side--with { border-color: rgba(169, 199, 147, .45); }
+.side h3 { font: 600 16px/1.3 var(--text); }
+.side > p { margin-top: 4px; font-size: 14px; color: var(--muted); }
+.side ul { margin-top: 14px; }
+.side li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 12px 0; border-top: 1px solid var(--line); font-size: 15px; }
+.side li span { overflow-wrap: anywhere; }
+.side li .chip { align-self: start; }
+.side li small { grid-column: 1 / -1; font-size: 13px; color: var(--tone, var(--muted)); }
+.side strong { display: block; margin-top: 10px; font: 400 56px/1 var(--display); letter-spacing: -.025em; color: var(--tone); }
+.truths { display: grid; grid-template-columns: 1fr 1fr; gap: 0 32px; margin-top: 24px; }
+.truths li { padding: 14px 0; border-top: 1px solid var(--line); font-size: 15px; color: var(--muted); }
+.truths b { display: block; margin-bottom: 2px; color: var(--ink); font-weight: 600; }
+.truths a { color: var(--ink); }
+@media (max-width: 800px) { .truths { grid-template-columns: 1fr; } }
+a.btn { text-decoration: none; }
+.measured { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 20px; align-items: center; margin-top: 16px; padding: 20px; border: 1px solid var(--line); border-radius: var(--r); }
+.measured strong { font: 400 44px/1 var(--display); letter-spacing: -.02em; color: var(--accent); white-space: nowrap; }
+.measured p { font-size: 15px; color: var(--muted); max-width: 78ch; }
+.measured a { color: var(--ink); }
+@media (max-width: 700px) { .measured { grid-template-columns: 1fr; gap: 10px; } }
+.next { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 24px; }
+
+/* the rules and the log */
+.under { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 16px; padding-bottom: 16px; }
+@media (max-width: 900px) { .under { grid-template-columns: 1fr; } }
+.box { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.box__body { padding: 18px; }
+.rules li { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 12px; align-items: baseline; padding: 12px 0; border-top: 1px solid var(--line); font-size: 15px; }
+.rules li:first-child { border-top: 0; padding-top: 0; }
+.rules p { margin-top: 14px; font-size: 14px; color: var(--muted); }
+.code { margin: 0; padding: 18px; font: 400 12.5px/1.7 var(--mono); color: #d9d2c4; white-space: pre; overflow-x: auto; }
+.code .c { color: var(--faint); } .code .k { color: var(--accent); } .code .s { color: var(--ok); }
+.ledger { margin-bottom: 40px; }
+.ledger summary { display: flex; align-items: center; gap: 12px; padding: 16px 18px; cursor: pointer; list-style: none; }
+.ledger summary::-webkit-details-marker { display: none; }
+.ledger summary b { font: 500 13px/1 var(--mono); color: var(--ok); }
+.ledger summary b.is-bad { color: var(--stop); }
+.ledger summary small { margin-left: auto; font: 400 12px/1 var(--mono); color: var(--faint); }
+.ledger summary small::after { content: "show"; }
+.ledger[open] summary small::after { content: "hide"; }
+.ledger table { width: 100%; border-collapse: collapse; font: 400 12px/1.5 var(--mono); }
+.ledger td, .ledger th { padding: 8px 18px; border-top: 1px solid var(--line); text-align: left; font-weight: 400; white-space: nowrap; }
+.ledger th { color: var(--faint); }
+.ledger td.h { color: var(--muted); }
+.ledger__scroll { overflow-x: auto; }
+.ledger__note { padding: 12px 18px 16px; font-size: 13px; color: var(--faint); border-top: 1px solid var(--line); }
+footer { padding: 24px 0 48px; border-top: 1px solid var(--line); color: var(--faint); font-size: 14px; display: flex; flex-wrap: wrap; gap: 8px 24px; }
+footer a { color: var(--muted); }
+[hidden] { display: none !important; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="brand" href="https://www.kettlelabs.si">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="6" fill="#262219"/><g transform="translate(4 3.5)" fill="none" stroke="#e8894f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 20.5c0-5.5 2.6-9 7.5-9s7.5 3.5 7.5 9z" fill="#e8894f"/><path d="M7 11.5c0-4.2 8-4.2 8 0"/><path d="M17.6 15.5l3.9-3"/><path d="M20 8.5c-.9-1 .9-2 0-3M22.4 7.5c-.7-.8.7-1.6 0-2.4"/></g></svg>
+      Kettle Labs
+    </a>
+    <span class="top__tag"><span class="live" aria-hidden="true"></span><span id="mode">Live demo</span></span>
+    <span class="top__sp"></span>
+    <span class="cmd"><span aria-hidden="true">$</span><code>pip install kettle-labs</code></span>
+    <a class="top__link" href="https://github.com/engineerjames44/kettle-core">GitHub</a>
+  </header>
+
+  <main>
+    <section class="intro">
+      <div class="intro__row">
+        <h1>The agent gets fooled. <em>The risky action waits for you.</em></h1>
+        <div>
+          <p class="lead" id="lead"></p>
+          <ul class="facts" id="facts"></ul>
+        </div>
+      </div>
+      <div class="tabs" id="tabs" role="tablist" aria-label="Story"></div>
+      <div class="tape" id="tape" hidden></div>
+    </section>
+
+    <section class="console" aria-live="polite">
+      <article class="pane pane--reads">
+        <header class="pane__head label"><i>1</i><span id="t1"></span></header>
+        <div class="pane__body" id="reads"></div>
+      </article>
+      <article class="pane">
+        <header class="pane__head label"><i>2</i><span id="t2"></span><small id="count"></small></header>
+        <div class="pane__body" id="tries"></div>
+      </article>
+      <article class="pane pane--you">
+        <header class="pane__head label"><i>3</i><span id="t3"></span></header>
+        <div class="pane__body" id="you"></div>
+      </article>
+    </section>
+
+    <section class="reveal" id="reveal" hidden></section>
+
+    <section class="under">
+      <div class="box">
+        <header class="pane__head label" id="t4"></header>
+        <div class="box__body rules" id="rules"></div>
+      </div>
+      <div class="box">
+        <header class="pane__head label">The same rules, in code<small id="codefrom"></small></header>
+        <pre class="code" id="code"></pre>
+      </div>
+    </section>
+
+    <details class="box ledger" id="ledger"></details>
+  </main>
+
+  <footer>
+    <span>Kettle Labs. Free and open source, Apache-2.0.</span>
+    <a href="https://www.kettlelabs.si">kettlelabs.si</a>
+    <a href="https://github.com/engineerjames44/kettle-core">Source</a>
+    <a href="https://github.com/engineerjames44/kettle-core/blob/main/RESULTS.md">Results</a>
+  </footer>
+</div>
+
+<script>
+const TOKEN = document.querySelector('meta[name="demo-token"]').content;
+const VISIT = Array.from(crypto.getRandomValues(new Uint8Array(12)), (byte) => byte.toString(16).padStart(2, "0")).join("");  // this open page's own run
+const STILL = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+let state = null;      // what the server last said
+let running = false;   // the agent is making its calls
+let seen = { steps: 0, cards: new Set(), done: false };
+const FRESH = () => ({ run: 0, beat: 0, playing: null, played: false, drawn: { none: 0, kettle: 0 }, said: { none: false, kettle: false } });
+let rec = FRESH();     // where the playback of the saved run has got to
+let plays = 0;         // goes up when a playback is started or dropped, so an old one stops
+
+// h("p", {class: "x"}, "text", node): every piece of text goes in as text, never as markup
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [name, value] of Object.entries(attrs || {})) {
+    if (name === "on") for (const [event, fn] of Object.entries(value)) el.addEventListener(event, fn);
+    else if (value === true) el.setAttribute(name, "");
+    else if (value !== false && value != null) el.setAttribute(name, value);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid);
+  return el;
+}
+
+// put(el, a, b, ...): swap an element's contents, leaving out anything that is null or false
+function put(el, ...kids) {
+  el.replaceChildren(...kids.flat().filter((kid) => kid != null && kid !== false));
+}
+
+async function api(path, body) {
+  const reply = await fetch(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: { "X-Demo-Token": TOKEN, "X-Demo-Visit": VISIT, "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!reply.ok) throw new Error("The demo server said " + reply.status);
+  return reply.json();
+}
+
+async function pick(story) {
+  running = false;
+  plays += 1;
+  state = await api("/api/reset", { story });
+  seen = { steps: 0, cards: new Set(), done: false };
+  rec = FRESH();
+  draw();
+}
+
+// ---- the real one: playing back the saved run ---------------------------------------
+
+// the order things appear in: each call, a pause while a held one waits for its answer, then the reply
+function frames() {
+  const out = [];
+  for (const side of ["none", "kettle"]) {
+    const run = state.recording.runs[rec.run][side];
+    run.calls.forEach((call, n) => {
+      if (call.outcome.startsWith("held")) out.push({ side, calls: n + 1, held: true });
+      out.push({ side, calls: n + 1 });
+    });
+    out.push({ side, calls: run.calls.length, reply: true });
+  }
+  return out;
+}
+
+function at(side) {
+  let now = { calls: 0 };
+  for (const frame of frames().slice(0, rec.beat)) if (frame.side === side) now = frame;
+  return now;
+}
+
+async function play(side) {
+  const mine = ++plays, all = frames();
+  if (side === "none") rec = Object.assign(FRESH(), { run: rec.run });
+  rec.playing = side;
+  draw();
+  while (rec.beat < all.length && all[rec.beat].side === side) {
+    const slow = all[rec.beat].reply || (rec.beat > 0 && all[rec.beat - 1].held);
+    await sleep(STILL ? 0 : slow ? 1600 : 1000);
+    if (plays !== mine) return;
+    rec.beat += 1;
+    draw();
+  }
+  rec.playing = null;
+  rec.played = rec.beat === all.length;
+  draw();
+}
+
+function choose(run) {
+  plays += 1;
+  const whole = rec.played;
+  rec = Object.assign(FRESH(), { run, played: whole });
+  if (whole) Object.assign(rec, { beat: frames().length, drawn: { none: 99, kettle: 99 }, said: { none: true, kettle: true } });
+  draw();
+}
+
+function taped(call) {
+  if (call.outcome === "ran") return call.attackers ? ["t-stop", "RAN", "Nobody was asked. It ran."] : ["t-ok", "RAN", null];
+  if (call.outcome === "held, owner said no") return ["t-ok", "DENIED", "Held. The stand-in owner was asked and said no. Nothing ran."];
+  return ["t-wait", call.outcome.toUpperCase(), null];
+}
+
+function drawTape() {
+  const R = state.recording, tape = $("tape");
+  tape.hidden = !R;
+  if (!R) { tape.replaceChildren(); return; }
+  put(tape, h("span", null, "All ", h("b", null, String(R.runs.length)), " saved runs are here. Run"),
+    h("span", { class: "tape__runs" }, R.runs.map((run, n) =>
+      h("button", { "aria-pressed": String(n === rec.run), disabled: !!rec.playing, on: { click: () => choose(n) } }, String(run.repeat)))));
+}
+
+function drawSide(id, side) {
+  const R = state.recording, run = R.runs[rec.run][side], now = at(side);
+  const rows = run.calls.slice(0, now.calls).map((call, n) => {
+    const held = now.held && n === now.calls - 1;
+    const [cls, word, why] = held ? ["t-wait", "HELD", "Held by the checkpoint. The owner is asked."] : taped(call);
+    return h("li", { class: cls + (n >= rec.drawn[side] ? " is-new" : ""), on: { mouseenter: () => light(call.source, true), mouseleave: () => light(call.source, false) } },
+      h("span", { class: "step__says" }, call.says),
+      h("span", { class: "step__chip chip" }, word),
+      call.inputs.length > 1
+        ? h("dl", { class: "inputs step__mail" }, call.inputs.map((input) => h("div", null, h("dt", null, input.name), h("dd", null, input.value))))
+        : h("span", { class: "step__call" }, call.call),
+      why && h("span", { class: "step__why" }, why),
+      !held && h("span", { class: "step__rec" }, "saved outcome: " + call.outcome));
+  });
+  const over = !!now.reply, fresh = rec.said[side] ? "" : " is-new";
+  const sent = run.ran.length > 0;
+  let go = null;
+  if (rec.playing === side) go = h("p", null, "Playing what was saved.");
+  else if (side === "none" && !now.calls && !rec.playing) go = h("button", { class: "btn btn--go", on: { click: () => play("none") } }, "Play the recording");
+  else if (side === "none" && rec.played) go = h("button", { class: "btn", on: { click: () => play("none") } }, "Play it again");
+  else if (side === "kettle" && !now.calls && at("none").reply) go = h("button", { class: "btn btn--go", on: { click: () => play("kettle") } }, "Now play it with the checkpoint");
+  put($(id),
+    !now.calls && rec.playing !== side && h("p", { class: "empty", style: "margin-bottom:18px" }, side === "none"
+      ? "Nothing is called. This plays back the calls a real model made, as saved."
+      : "Second: the same model and the same notes, with the checkpoint in the way."),
+    h("ol", { class: "feed" }, rows),
+    rec.playing === side && h("div", { class: "thinking", "aria-label": "playing" }, h("span"), h("span"), h("span")),
+    over && h("div", { class: "verdict " + (sent ? "t-stop" : "t-ok") + fresh },
+      h("b", null, sent ? "The draft figures went to the attacker's address." : "Nothing was sent."),
+      h("span", null, sent ? "The test world's own record of what really ran: " + run.ran.join("; ") + "." : "The test world's own record of what really ran is empty.")),
+    over && h("div", { class: "said" + fresh },
+      h("span", { class: "label" }, "The model's reply to its owner, as saved"),
+      h("p", null, run.reply),
+      h("small", null, "run " + R.runs[rec.run].repeat + " of " + R.runs.length + " · " + run.calls.length + " tool calls · " + run.seconds.toFixed(1) + " s")),
+    go && h("div", { class: "go" }, go));
+  if (now.calls > rec.drawn[side] && !STILL) {
+    const last = run.calls[now.calls - 1];
+    light(last.source, true);
+    setTimeout(() => light(last.source, false), 1500);
+  }
+  rec.drawn[side] = now.calls;
+  rec.said[side] = over;
+}
+
+function drawTaped() {
+  const R = state.recording, box = $("reveal");
+  box.hidden = !rec.played;
+  if (!rec.played) { box.replaceChildren(); return; }
+  if (box.firstChild) return;  // already drawn: it is about all the runs, so it does not change with the one picked
+  const no = R.counts.none, yes = R.counts.kettle;
+  const truth = (head, ...words) => h("li", null, h("b", null, head), h("span", null, ...words));
+  put(box, h("span", { class: "label" }, "What the saved report shows"),
+    h("h2", null, "Sent " + no.got_through + " times out of " + no.runs + ". With the checkpoint, " + yes.got_through + "."),
+    h("p", { class: "reveal__sub" }, "Same model, same edited notes, same day. The checkpoint did not make the model any wiser. It made the send wait for a yes."),
+    h("div", { class: "versus" },
+      h("div", { class: "side t-stop" },
+        h("h3", null, "No checkpoint"),
+        h("strong", null, no.got_through + " of " + no.runs),
+        h("p", null, "runs where the draft figures went to the attacker's address. Nobody was asked.")),
+      h("div", { class: "side side--with t-ok" },
+        h("h3", null, "Kettle checkpoint"),
+        h("strong", null, yes.got_through + " of " + yes.runs),
+        h("p", null, "runs where anything went out. The model tried the send in " + yes.went_along + " of " + yes.runs + ". Each was held, and the owner was asked " + yess(yes.owner_asked) + " and said yes " + yess(yes.said_yes) + "."))),
+    h("ul", { class: "truths" },
+      truth("The model said it was not her usual address.", "In " + R.said_usual + " of " + no.runs + " replies, each written after the email had gone. In no run did it open " + R.unread.map((doc) => doc.id).join(" or ") + ", which has her usual one."),
+      truth("The owner was code, not a person.", "A stand-in that says yes only to the action the task called for. That is the best case for a careful owner. A real person may say yes."),
+      truth("The world is pretend.", "The files and send_email are made by the test. \u201cSent\u201d means the pretend send_email really ran. No real email exists."),
+      truth("One attack, written by us.", "Of the 19 attacks in our two sets, this is the one that got through. The other 18 were not gone along with at all. Nobody independent has repeated any of it."),
+      truth("Kettle " + R.kettle_version + ", on " + R.date + ".", "Hosted models change, so this is a result for that day. The checkpoint's log was checked after each run: chain intact in " + R.logs_ok + " of " + yes.runs + "."),
+      truth("Check it yourself.", "Every call and reply above is in ", h("a", { href: R.link }, R.file), ". The other runs of that day are in ", h("a", { href: "https://github.com/engineerjames44/kettle-core/blob/main/RESULTS.md" }, "RESULTS.md"), ".")),
+    h("div", { class: "next" },
+      h("span", { class: "cmd" }, h("span", { "aria-hidden": "true" }, "$"), h("code", null, "pip install kettle-labs")),
+      h("a", { class: "btn", href: R.link }, "Open the saved file"),
+      h("button", { class: "btn", on: { click: () => { pick(state.stories[0].key); scrollTo({ top: 0, behavior: STILL ? "auto" : "smooth" }); } } }, "Try one yourself")));
+}
+
+function yess(n) { return n === 0 ? "0 times" : count(n); }
+
+async function run() {
+  running = true;
+  draw();
+  const story = state.story;
+  while (running && state.story === story && state.steps.length < state.total) {
+    await sleep(STILL ? 0 : 950);
+    if (!running || state.story !== story) return;
+    state = await api("/api/step", {});
+    draw();
+  }
+  running = false;
+  draw();
+  if (state.waiting.length && matchMedia("(max-width: 700px)").matches)  // one column: bring what is waiting into view
+    $("you").closest(".pane").scrollIntoView({ behavior: STILL ? "auto" : "smooth", block: "start" });
+}
+
+async function answer(card, yes) {
+  state = await api("/api/answer", { request_id: card.request_id, fingerprint: card.fingerprint, yes });
+  draw();
+}
+
+// ---- drawing ---------------------------------------------------------------------
+
+function tone(step) {
+  if (step.status === "held") return ["t-wait", "WAITING"];
+  if (step.status === "ran") return ["t-ok", step.answer ? "RAN · YOUR YES" : "RAN"];
+  if (step.status === "denied") return ["t-stop", "DENIED"];
+  if (step.status === "refused") return ["t-stop", step.answer ? "REFUSED" : "BLOCKED"];
+  return ["t-stop", String(step.status).toUpperCase()];
+}
+
+function drawTabs() {
+  put($("tabs"), ...state.stories.map((story) =>
+    h("button", { class: "tab", role: "tab", "aria-selected": String(story.key === state.story), on: { click: () => pick(story.key) } }, story.name)));
+}
+
+function drawReads() {
+  const R = state.recording;
+  const told = !R || !!at("none").reply;  // in the recording, who wrote what is told once the first run is over
+  const paper = (doc, more) =>
+    h("div", { class: "doc" + (doc.tell && told ? " is-planted" : "") + (more || ""), id: "doc-" + doc.id },
+      h("div", { class: "doc__top" }, h("span", { class: "doc__from" }, doc.from), h("span", { class: "doc__kind" }, doc.kind)),
+      doc.title && h("h3", null, doc.title),
+      h("p", { class: doc.pre ? "pre" : null }, doc.body),
+      doc.tell && told && h("p", { class: "doc__tell" }, doc.tell));
+  put($("reads"),
+    R ? h("div", { class: "job" }, h("span", { class: "label" }, "The owner asked"), h("p", null, state.job), h("span", { class: "label" }, "The system prompt, in full"), h("p", null, R.system))
+      : h("div", { class: "job" }, h("span", { class: "label" }, "The owner asked"), state.job),
+    ...state.reads.map((doc) => paper(doc)),
+    ...(R && rec.played ? R.unread.map((doc) => paper(doc, " is-unread")) : []));
+}
+
+function light(id, on) {
+  const doc = id && $("doc-" + id);
+  if (doc) doc.classList.toggle("is-lit", on);
+}
+
+function drawTries() {
+  const rows = state.steps.map((step, number) => {
+    const [cls, word] = tone(step);
+    const why = step.status === "refused" || step.status === "denied" ? step.reason : null;
+    return h("li", { class: cls + (number >= seen.steps ? " is-new" : ""), on: { mouseenter: () => light(step.source, true), mouseleave: () => light(step.source, false) } },
+      h("span", { class: "step__says" }, step.says),
+      h("span", { class: "step__chip chip" }, word),
+      h("span", { class: "step__call" }, step.call),
+      h("span", { class: "step__thought" }, step.thought),
+      why && h("span", { class: "step__why" }, why));
+  });
+  const started = state.steps.length > 0;
+  const finished = state.steps.length === state.total;
+  let go;
+  if (!started && !running) go = [h("button", { class: "btn btn--go", on: { click: run } }, "Run the agent")];
+  else if (running) go = [h("p", null, "The agent is working.")];
+  else if (!finished) go = [h("button", { class: "btn btn--go", on: { click: run } }, "Carry on")];
+  else if (state.waiting.length) go = [h("p", null, "The agent has made its calls. " + (state.waiting.length === 1 ? "One action is" : state.waiting.length + " actions are") + " waiting for you.")];
+  else go = [h("button", { class: "btn", on: { click: () => pick(state.story) } }, "Run it again")];
+  put($("tries"), !started && !running && h("p", { class: "empty", style: "margin-bottom:18px" }, "The agent has not started. It will read the page on the left and act on it."),
+    h("ol", { class: "feed" }, rows),
+    running && h("div", { class: "thinking", "aria-label": "working" }, h("span"), h("span"), h("span")),
+    h("div", { class: "go" }, go));
+  $("count").textContent = started ? state.steps.length + " of " + state.total + " calls" : "";
+  if (state.steps.length > seen.steps && !STILL) {
+    const last = state.steps[state.steps.length - 1];
+    light(last.source, true);
+    setTimeout(() => light(last.source, false), 1500);
+  }
+  seen.steps = state.steps.length;
+}
+
+function left(card) {
+  const s = Math.max(0, Math.round(card.expires_at - Date.now() / 1000));
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+
+function drawYou() {
+  const cards = state.waiting.map((card) => {
+    const first = card.inputs.filter((input) => input.first_time);
+    const flag = first.length
+      ? h("p", { class: "flag flag--new" }, h("span", null, h("b", null, "First time. "), "No approved " + card.tool + " has run with this " + first.map((input) => input.name).join(" or ") + " before."))
+      : h("p", { class: "flag flag--seen" }, "Seen before. Nothing the app watches is new.");
+    const el = h("div", { class: "card" + (seen.cards.has(card.request_id) ? "" : " is-new") },
+      h("div", { class: "card__top" }, h("span", null, "Needs your yes · " + card.tool), h("time", { "data-until": card.expires_at }, "held for " + left(card))),
+      h("div", { class: "card__main" },
+        h("h3", null, card.says),
+        flag,
+        h("dl", { class: "inputs" }, card.inputs.map((input) => h("div", { class: input.first_time ? "is-first" : "" }, h("dt", null, input.name), h("dd", null, input.value)))),
+        h("div", { class: "card__btns" },
+          h("button", { class: "btn btn--go", on: { click: () => answer(card, true) } }, "Approve"),
+          h("button", { class: "btn", on: { click: () => answer(card, false) } }, "Deny"))),
+      h("details", null,
+        h("summary", null, "The yes is tied to fingerprint " + card.fingerprint.slice(0, 8) + "…" + card.fingerprint.slice(-4)),
+        h("pre", null, card.preview)));
+    seen.cards.add(card.request_id);
+    return el;
+  });
+  const answered = state.steps.filter((step) => step.answer).map((step) => {
+    const [cls] = tone(step);
+    return h("li", { class: cls }, h("b", null, step.answer === "yes" && step.status === "ran" ? "APPROVED" : step.status.toUpperCase()),
+      h("span", null, step.says + (step.status === "ran" ? ". Ran once." : ". Nothing ran.")));
+  });
+  const blocked = state.steps.filter((step) => step.status === "refused" && !step.answer).length;
+  put($("you"), ...cards,
+    !cards.length && !answered.length && h("p", { class: "empty" }, state.steps.length === state.total && state.total
+      ? "Nothing needed a yes."
+      : "Nothing yet. Actions that need a yes will wait here. Nothing runs until you answer."),
+    answered.length ? h("ul", { class: "answered" }, answered) : null,
+    blocked ? h("p", { class: "empty", style: "margin-top:14px;max-width:none;font-size:14px" }, (blocked === 1 ? "One call was" : blocked + " calls were") + " blocked without asking you. See the middle column.") : null);
+}
+
+function count(n) { return n === 1 ? "once" : n === 2 ? "twice" : n + " times"; }
+
+function drawReveal() {
+  const box = $("reveal");
+  box.hidden = !state.done;
+  if (!state.done) { box.replaceChildren(); return; }
+  const acted = state.steps.filter((step) => step.without.length);   // calls that change something when they run
+  const fooled = acted.filter((step) => step.planted);
+  const got = fooled.filter((step) => step.ran.length);
+  const lost = acted.filter((step) => !step.planted && step.status === "denied");
+  const title = got.length
+    ? "You said yes to " + got.length + " of the attacker's " + fooled.length + " actions."
+    : "The agent was fooled " + count(fooled.length) + ". Nothing the attacker wanted ran.";
+  const sub = got.length
+    ? "The checkpoint held it and marked what was new. The yes was yours, it ran once, and it is in the log. With no checkpoint there would have been no question."
+    : "With no checkpoint, every call below would have run the moment the agent asked.";
+  const outcome = (step) => {
+    if (step.status === "ran") return [step.planted ? "t-stop" : "t-ok", "Ran once, after your yes."];
+    if (step.status === "denied") return [step.planted ? "t-ok" : "t-wait", "Denied by you. Nothing ran."];
+    if (step.status === "refused" && !step.answer) return ["t-ok", "Blocked. Nobody was asked. Nothing ran."];
+    if (step.status === "held") return ["t-ok", "Not answered in time. Nothing ran."];
+    return ["t-wait", step.reason];
+  };
+  put(box, h("span", { class: "label" }, "What just happened"),
+    h("h2", null, title),
+    h("p", { class: "reveal__sub" }, sub),
+    h("div", { class: "versus" },
+      h("div", { class: "side" },
+        h("h3", null, "With no checkpoint"),
+        h("p", null, "The same script with nothing in the way. Every call runs."),
+        h("ul", null, acted.map((step) => h("li", { class: step.planted ? "t-stop" : "" },
+          h("span", null, step.without.join(". ")),
+          h("span", { class: "chip" }, step.planted ? "ATTACKER'S" : "YOURS"))))),
+      h("div", { class: "side side--with" },
+        h("h3", null, "With the checkpoint"),
+        h("p", null, "What happened on this page."),
+        h("ul", null, acted.map((step) => { const [cls, words] = outcome(step); return h("li", { class: cls }, h("span", null, step.says), h("small", null, words)); })))),
+    lost.length ? h("p", { class: "reveal__sub", style: "font-size:15px;margin-top:16px" }, "You also said no to " + (lost.length === 1 ? "one action" : lost.length + " actions") + " of your own. Nothing ran, and the agent can ask again.") : null,
+    h("div", { class: "measured" },
+      h("strong", null, "11 of 11, then 0"),
+      h("p", null, "Measured on a real model, 15 November 2026. A shared notes file was edited to give a new address, and claude-opus-5-5 emailed draft figures to the attacker in 11 of 11 runs with no checkpoint. With the checkpoint it tried all 11 times, each send was held, a stand-in owner said no, and 0 went out. It was the one attack of 19 that got through; the models resisted the other 18 alone. Our own runs of our own test, and nobody independent has repeated them. ",
+        h("a", { href: "https://github.com/engineerjames44/kettle-core/blob/main/RESULTS.md" }, "Read every run"), ".")),
+    h("div", { class: "next" },
+      h("span", { class: "cmd" }, h("span", { "aria-hidden": "true" }, "$"), h("code", null, "pip install kettle-labs")),
+      h("button", { class: "btn", on: { click: () => pick(state.story) } }, "Run it again"),
+      ...state.stories.filter((story) => story.key !== state.story).map((story) => h("button", { class: "btn", on: { click: () => { pick(story.key); scrollTo({ top: 0, behavior: STILL ? "auto" : "smooth" }); } } }, "Try the " + story.name.toLowerCase()))));
+}
+
+const LEVELS = { free: ["t-ok", "FREE"], needs_yes: ["t-wait", "NEEDS YES"], never: ["t-stop", "NEVER"] };
+
+function drawRules() {
+  put($("rules"), h("ul", null, state.plain.map(([level, words]) => h("li", { class: LEVELS[level][0] }, h("span", null, h("span", { class: "chip" }, LEVELS[level][1])), h("span", null, words)))),
+    h("p", null, state.recording
+      ? "The test's own rules, as saved with the report: the tools that only read are free, and the two that act need a yes."
+      : "The app that owns the agent writes these once, in code. The agent is never handed the tools, only a way to ask for them."));
+  $("t4").textContent = state.recording ? "The rules in the test" : "The rules the app set";
+  $("codefrom").textContent = state.code_from;
+  // colour the code: comments, the three levels, strings
+  const code = $("code");
+  code.replaceChildren();
+  const lines = state.code.replace(/\n+$/, "").split("\n");
+  const dent = Math.min(...lines.filter((line) => line.trim()).map((line) => line.match(/^ */)[0].length));
+  for (const line of lines) {
+    const [, text, note] = line.slice(dent).match(/^(.*?)(\s+#.*)?$/);
+    for (const part of text.split(/(FREE|NEEDS_YES|NEVER|"[^"]*")/)) {
+      if (!part) continue;
+      const cls = /^(FREE|NEEDS_YES|NEVER)$/.test(part) ? "k" : part[0] === '"' ? "s" : null;
+      code.append(cls ? h("span", { class: cls }, part) : part);
+    }
+    if (note) code.append(h("span", { class: "c" }, note));
+    code.append("\n");
+  }
+}
+
+function drawLog() {
+  $("ledger").hidden = !!state.recording;  // the saved report keeps the outcome of each log check, not the log
+  const open = $("ledger").open;
+  put($("ledger"), h("summary", null, h("span", { class: "label" }, "The checkpoint's log"), h("b", { class: state.log_ok ? "" : "is-bad" }, state.log_words), h("small")),
+    h("div", { class: "ledger__scroll" }, h("table", null,
+      h("tr", null, ["#", "event", "tool", "hash of the entry before", "hash of this entry"].map((name) => h("th", null, name))),
+      state.log.map((entry) => h("tr", null, h("td", null, entry.seq), h("td", null, entry.event), h("td", null, entry.tool || ""), h("td", { class: "h" }, entry.prev + "…"), h("td", { class: "h" }, entry.hash + "…"))))),
+    h("p", { class: "ledger__note" }, "Each entry carries the hash of the one before it, so an edit or a missing line shows. The first " + state.earlier + " entries are the approved actions from before today and are not listed."));
+  $("ledger").open = open;
+}
+
+function drawHead() {
+  const R = state.recording;
+  const fact = (head, ...words) => h("li", null, h("span", null, h("b", null, head), " ", ...words));
+  document.body.classList.toggle("is-rec", !!R);
+  $("mode").textContent = R ? "Recording" : "Live demo";
+  $("lead").textContent = R
+    ? "This one is not a script. It is what a real model did with one edited file, played back from the saved report: first with no checkpoint, then with one."
+    : "Pick a story and let the agent run. One thing it reads was written by an attacker. Then answer what reaches you.";
+  put($("facts"), ...(R ? [
+    fact("A recording of a real run.", R.model + " made these calls on " + R.date + ", with Kettle " + R.kettle_version + ". No model is called now."),
+    fact("Nothing is rewritten.", "The calls and replies are read from ", h("a", { href: R.link }, "the saved report"), ". The files and the email are a pretend world, so no real email exists."),
+  ] : [
+    fact("The checkpoint is real.", "Every decision here is made by kettle-labs " + state.version + "."),
+    fact("The agent is a script.", "No model is called and nothing real is paid, pushed or sent."),
+  ]));
+  $("t1").textContent = R ? "The model read" : "The agent reads";
+  $("t2").textContent = R ? "No checkpoint" : "The agent tries";
+  $("t3").textContent = R ? "Kettle checkpoint" : "What reaches you";
+}
+
+function draw() {
+  drawTabs(); drawHead(); drawTape(); drawReads();
+  if (state.recording) {
+    drawSide("tries", "none"); drawSide("you", "kettle"); drawTaped();
+    $("count").textContent = "run " + state.recording.runs[rec.run].repeat + " of " + state.recording.runs.length;
+  } else {
+    drawTries(); drawYou(); drawReveal();
+    if (state.done && !seen.done) $("reveal").scrollIntoView({ behavior: STILL ? "auto" : "smooth", block: "start" });  // once, when the last answer is in
+    seen.done = state.done;
+  }
+  drawRules(); drawLog();
+}
+
+setInterval(() => {
+  for (const el of document.querySelectorAll("time[data-until]")) el.textContent = "held for " + left({ expires_at: Number(el.dataset.until) });
+}, 1000);
+
+api("/api/state").then((first) => { state = first; seen.steps = first.steps.length; first.waiting.forEach((card) => seen.cards.add(card.request_id)); seen.done = first.done; draw(); })
+  .catch((error) => { document.querySelector("main").prepend(h("p", { class: "lead", style: "padding:24px 0;color:var(--stop)" }, String(error.message || error))); });
+</script>
+</body>
+</html>
