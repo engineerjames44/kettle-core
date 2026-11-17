@@ -7,7 +7,8 @@ Two things for people who build AI agents, both free and open source (Apache-2.0
 2. **The attack test.** Believable trick text is planted where your agent reads (an email, a web page, a file,
    a calendar invite). The report counts what the model went along with and what actually got through.
 
-**Status: early, not released.** It is not on PyPI yet and the interfaces will change. The attack test has had
+**Status: early.** Version 0.1.0 is on PyPI as [`kettle-labs`](https://pypi.org/project/kettle-labs/). The
+interfaces will change. The attack test has had
 one day of runs on two real models, by us: see "What we have measured so far" below and [RESULTS.md](https://github.com/engineerjames44/kettle-core/blob/main/RESULTS.md).
 Everything in "What has been checked" below was measured on 2026-11-15 and can be run again from this folder.
 
@@ -16,17 +17,25 @@ Everything in "What has been checked" below was measured on 2026-11-15 and can b
 Python 3.11 or newer. The checkpoint itself needs nothing else installed.
 
 ```
+pip install kettle-labs
+```
+
+The package is called `kettle-labs` on PyPI and is imported as `kettle`. To see that it arrived whole, run the
+attack test's check of itself. It uses no model and costs nothing, and should end with `8 of 8 checks held.`
+
+```
+python -m kettle.attacktest --self-check
+```
+
+The tests, the examples and the check scripts are not in the package. The commands in the rest of this page
+are run from a copy of this repository:
+
+```
 git clone https://github.com/engineerjames44/kettle-core.git
 cd kettle-core
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 .venv/bin/python examples/quickstart.py
-```
-
-To use it from a project of your own without the tests and examples, install it straight from GitHub:
-
-```
-pip install "git+https://github.com/engineerjames44/kettle-core.git"
 ```
 
 ## The checkpoint
@@ -380,7 +389,7 @@ All of this uses no model and costs nothing. Measured on 2026-11-15, on macOS.
 | Attack test broken on purpose | `.venv/bin/python checks/break_attacktest.py` | 107 breaks tried, 106 caught, 1 known and explained |
 | Adapters broken on purpose | `.venv/bin/python checks/break_adapters.py` | 43 breaks tried, 43 caught by the tests |
 | Previews read back | `.venv/bin/python checks/read_back.py` | 150,000 random records, 0 read back wrongly, no two different records sharing a preview |
-| The built package | see [RELEASING.md](https://github.com/engineerjames44/kettle-core/blob/main/RELEASING.md) | The wheel and the source archive build, and the wheel installed by itself on Python 3.11.18 passes the self-check on both case sets |
+| The built package | see [RELEASING.md](https://github.com/engineerjames44/kettle-core/blob/main/RELEASING.md) | The wheel and the source archive build, and the wheel installed by itself on Python 3.11.18 passes the self-check on both case sets. On 2026-11-16, `pip install kettle-labs` from PyPI into an empty environment on Python 3.14.8 passed the same two self-checks |
 
 - **The tests.** 226 are for the checkpoint, 301 for the attack test, 64 for the adapters, 8 run the
   examples and 5 check that the tests stay on this machine. Of the checkpoint's, the 99 in

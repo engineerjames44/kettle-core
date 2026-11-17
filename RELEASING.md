@@ -1,6 +1,6 @@
 # Putting a release on PyPI
 
-For whoever publishes Kettle. Nothing here runs by itself, and none of it has been done yet.
+For whoever publishes Kettle. Nothing here runs by itself. Version 0.1.0 went up this way on 16 November 2026.
 
 The package is called `kettle-labs` on PyPI and is imported as `kettle`. The name `kettle` on PyPI belongs to
 another project (one release, 0.0.1, with no files to download when we looked on 15 November 2026), so it
