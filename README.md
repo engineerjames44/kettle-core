@@ -7,15 +7,14 @@ Two things for people who build AI agents, both free and open source (Apache-2.0
 2. **The attack test.** Believable trick text is planted where your agent reads (an email, a web page, a file,
    a calendar invite). The report counts what the model went along with and what actually got through.
 
-**Status: early.** Version 0.1.0 is on PyPI as [`kettle-labs`](https://pypi.org/project/kettle-labs/). The
-interfaces will change. The attack test has had
+**Status: early.** This is version 0.2.0. The package is on PyPI as
+[`kettle-labs`](https://pypi.org/project/kettle-labs/). The interfaces will change. The attack test has had
 one day of runs on two real models, by us: see "What we have measured so far" below and [RESULTS.md](https://github.com/engineerjames44/kettle-core/blob/main/RESULTS.md).
 Everything in "What has been checked" below can be run again from this folder, and says when it was measured.
 
-**In this repository and not yet in a release:** the source trail, a yes from your phone over Telegram, the
-attacks on the yes itself (`--yes-set`), the browser demo (`python -m kettle.demo`) and receipts
-(`python -m kettle.verify`). `pip install kettle-labs` gives 0.1.0, which has none of them. Each is marked
-where it is described below, and is run from a copy of this repository.
+**New in 0.2.0:** the source trail, a yes from your phone over Telegram, the attacks on the yes itself
+(`--yes-set`), the browser demo (`python -m kettle.demo`) and receipts (`python -m kettle.verify`). Release
+0.1.0 has none of them. Each is marked where it is described below.
 
 ## Set up
 
@@ -45,7 +44,7 @@ python3 -m venv .venv
 
 ## See it in a browser
 
-*In this repository and not yet in a release.*
+*New in 0.2.0.*
 
 ```
 .venv/bin/python -m kettle.demo
@@ -135,7 +134,7 @@ Fingerprint: ...
 ```
 
 `decision.first_time` and `pending()` carry the same names, so an approval screen can show the mark its own
-way. In this repository and not yet in a release, each entry of `pending()` also has `watched`: every watched
+way. New in 0.2.0, each entry of `pending()` also has `watched`: every watched
 input the action has, new or not. What the mark does and does not mean:
 
 - **It is about this store file only.** "Used before" means an approved action of that tool was started with
@@ -157,7 +156,7 @@ input the action has, new or not. What the mark does and does not mean:
 
 ### Where a value came from
 
-*In this repository and not yet in a release.*
+*New in 0.2.0.*
 
 The first-time mark says a value is new. It does not say where the agent got it. The checkpoint sees every
 read as well as every risky action, because both go through it, so it can look. Switch the source trail on,
@@ -226,7 +225,7 @@ What the trail does and does not mean:
 
 ### Receipts
 
-*In this repository and not yet in a release.*
+*New in 0.2.0.*
 
 ```
 .venv/bin/python -m kettle.verify kettle.db
@@ -376,8 +375,8 @@ What to know about these pieces:
 
 ### A yes from your phone
 
-*In this repository and not yet in a release. The tests run it against a pretend Telegram on our own
-machine. The real Telegram was tried by hand, once, on 2026-11-17: see "What to know" below.*
+*New in 0.2.0. The tests run it against a pretend Telegram on our own machine. The real Telegram was tried
+by hand on 2026-11-17: see "What to know" below.*
 
 A held action can be sent to you on Telegram, with an Approve and a Deny button under the preview:
 
@@ -560,7 +559,7 @@ What a report from this test does and does not show:
 
 ### Attacks on the yes itself
 
-*In this repository and not yet in a release.*
+*New in 0.2.0.*
 
 The attack test asks what a model does with trick text. A second set asks something else: once an action is
 held, can a yes be got that the owner did not give, or be given for something other than what the owner was
@@ -633,15 +632,15 @@ paths that go through it.
   not in `needs_checking()`.
 
 Also not built: an approval screen to put in your own app (there is the question in the terminal described
-above and, not yet in a release, the Telegram approver, tried with the real Telegram once, by hand),
+above and the Telegram approver, tried with the real Telegram by hand on one day),
 limits over time (such as a daily spending cap), support for values that are not plain JSON (files are
 passed by name or by hash), a source trail that follows a value written in pieces, a held-back case set, and
 a comparison with the approval steps built into agent frameworks.
 
 ## What has been checked
 
-All of this uses no model and costs nothing. Measured on 2026-11-17, on macOS, on the code in this
-repository, which is ahead of release 0.1.0. Where a row was measured earlier, on the 0.1.0 code, it says so.
+All of this uses no model and costs nothing. Measured on 2026-11-17, on macOS, on the code of
+release 0.2.0. Where a row was measured earlier, on the 0.1.0 code, it says so.
 
 | Check | Command | Result |
 | --- | --- | --- |
@@ -657,7 +656,7 @@ repository, which is ahead of release 0.1.0. Where a row was measured earlier, o
 | Receipts broken on purpose | `.venv/bin/python checks/break_verify.py` | 51 breaks tried, 51 caught by the tests |
 | Source trail over the saved runs | `.venv/bin/python checks/trail_over_saved_runs.py` | 170 of 170 runs saved on 15 November played again. Of the held actions, 31 of 31 aimed at the attacker and 55 of 55 others traced to an earlier call, and none had no source found |
 | Previews read back | `.venv/bin/python checks/read_back.py` | 150,000 random records, 0 read back wrongly, no two different records sharing a preview |
-| The built package (0.1.0 only) | see [RELEASING.md](https://github.com/engineerjames44/kettle-core/blob/main/RELEASING.md) | Measured for 0.1.0, and not again with the newer code in it: the wheel and the source archive build, and the wheel installed by itself on Python 3.11.18 passes the self-check on both case sets. On 2026-11-16, `pip install kettle-labs` from PyPI into an empty environment on Python 3.14.8 passed the same two self-checks |
+| The built package | see [RELEASING.md](https://github.com/engineerjames44/kettle-core/blob/main/RELEASING.md) | For 0.2.0, on 2026-11-17: the wheel and the source archive build from a clean copy of the committed files, and the wheel installed by itself into an empty environment on Python 3.11.18, 3.14.8 and 3.15.2 passes the self-check on both case sets and gives the same 25 tried, 23 stopped on the attacks on the yes. An install of 0.2.0 from PyPI has not been measured. For 0.1.0, on 2026-11-16, `pip install kettle-labs` from PyPI into an empty environment on Python 3.14.8 passed the two self-checks |
 
 - **The tests.** 380 are for the checkpoint, 301 for the attack test, 64 for the adapters, 205 for the
   Telegram approver, 39 for the attacks on the yes, 25 for the browser demo and 30 for the receipts. 8 run

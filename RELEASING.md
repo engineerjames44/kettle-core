@@ -19,11 +19,17 @@ cannot be used.
 .venv/bin/python checks/break_checkpoint.py
 .venv/bin/python checks/break_attacktest.py
 .venv/bin/python checks/break_adapters.py
+.venv/bin/python checks/break_telegram.py
+.venv/bin/python checks/break_yes_set.py
+.venv/bin/python checks/break_demo.py
+.venv/bin/python checks/break_verify.py
 .venv/bin/python -m kettle.attacktest --self-check
 .venv/bin/python -m kettle.attacktest --self-check --cases fraud
+.venv/bin/python -m kettle.attacktest --yes-set
 ```
 
-Every one should end with nothing failed and nothing missed.
+Every one should end with nothing failed and nothing missed. The attacks on the yes should end with
+"All as expected." `break_telegram.py` takes about a quarter of an hour.
 
 ## 2. Build it
 
@@ -35,6 +41,15 @@ rm -rf dist
 ```
 
 This leaves two files in `dist/`: a `.whl` and a `.tar.gz`. `dist/` is not kept in git.
+
+The build packs every file under `src/kettle`, committed or not. If the folder holds work that is not in the
+commit being released, build from a clean copy of that commit and bring the two files back:
+
+```
+rm -rf /tmp/kettle-release && mkdir /tmp/kettle-release
+git archive HEAD | tar -x -C /tmp/kettle-release
+(cd /tmp/kettle-release && /path/to/kettle-core/.venv/bin/python -m build)
+```
 
 ## 3. Try the built package somewhere clean
 
@@ -64,7 +79,7 @@ Afterwards, delete that token and make a new one that is limited to the `kettle-
 
 - Check the page: https://pypi.org/project/kettle-labs/
 - In a clean folder, `pip install kettle-labs` and run the self-check again.
-- Tag the commit that was built: `git tag v0.1.0` and `git push origin v0.1.0`.
+- Tag the commit that was built, with its version: `git tag v0.2.0` and `git push origin v0.2.0`.
 - In `README.md`, change the status line and the install step under "Set up" to `pip install kettle-labs`.
 - On the website, tick "Packaged release" in the release list.
 
