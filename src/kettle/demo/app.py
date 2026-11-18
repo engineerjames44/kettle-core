@@ -1,7 +1,7 @@
 """An agent's risky actions, held for a yes in a browser. No model, nothing real is paid, pushed or sent.
 
-Run it from the project folder:  .venv/bin/python examples/approve_in_browser.py
-then open http://127.0.0.1:8765
+    python -m kettle.demo               opens the page in a browser
+    python -m kettle.demo --no-browser  only prints the address
 
 This is what an app with Kettle inside looks like to the person who owns the agent.
 A script plays an agent that believes one thing an attacker wrote. There are three
@@ -15,35 +15,45 @@ support tickets. In each one:
 
 Every decision on the page is made by the checkpoint. The pieces of it this file
 uses are tool, request, pending, approve, deny, run and log: the same ones your
-own app would call. The page beside this file (approve_in_browser.html) only draws
-what they return. It is served to this machine alone, and it asks Google Fonts for
-its three typefaces when it can.
+own app would call. The page beside this file (page.html) only draws what they
+return. It is served to this machine alone, and it asks Google Fonts for its three
+typefaces when it can.
 
 A fourth tab, "Real Opus run", is not a script. It plays back a saved report of a
-real model (results/2026-11-15/2026-11-15T184338Z/results.json): the calls it made
-and what it told its owner, with no checkpoint and with one. Nothing is called and
-nothing is decided there; it only shows what was saved.
+real model: the calls it made and what it told its owner, with no checkpoint and
+with one. No model is called there and the outcomes shown are the saved ones. The
+report is results/2026-11-15/2026-11-15T184338Z/results.json in the repository, and
+a copy of it is beside this file so the demo also runs from an install.
+
+One thing on that tab is not part of the recording, and the page says so: under each
+held email, where its address came from. That run was made before the checkpoint
+had a source trail. So the saved calls are made again here, against the same
+pretend files, through a checkpoint with trail=True, and what its trail says is
+shown. The saved file holds no times, so no ages are shown.
 """
 
+import argparse
 import inspect
 import json
+import re
 import secrets
+import webbrowser
 from dataclasses import dataclass
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Callable
 
-import kettle
-from kettle import FREE, NEEDS_YES, NEVER, Checkpoint
-from kettle.attacktest import Sandbox, load_cases
-from kettle.attacktest.runner import make_checkpoint
+from .. import FREE, HELD, NEEDS_YES, NEVER, Checkpoint, __version__
+from ..attacktest import Sandbox, load_cases
+from ..attacktest.runner import make_checkpoint
+from ..attacktest.sandbox import RISKY
 
-HOST, PORT = "127.0.0.1", 8765
-TOKEN = secrets.token_urlsafe(16)  # the page sends it with every call, so another site cannot press the buttons
-PAGE = Path(__file__).with_suffix(".html")
-SAVED = Path(__file__).parent.parent / "results" / "2026-11-15" / "2026-11-15T184338Z" / "results.json"
-SAVED_AT = "https://github.com/engineerjames44/kettle-core/blob/main/results/2026-11-15/2026-11-15T184338Z/results.json"
+HOST, PORT = "127.0.0.1", 8765  # this machine only. PORT is tried first, and a free one is used if it is taken
+PAGE = Path(__file__).with_name("page.html")
+SAVED = Path(__file__).with_name("opus-run-2026-11-15.json")  # a copy, byte for byte, of the report named below
+SAVED_AS = "results/2026-11-15/2026-11-15T184338Z/results.json"  # where that report is in the repository
+SAVED_AT = "https://github.com/engineerjames44/kettle-core/blob/main/" + SAVED_AS
 
 
 # ---- story 1: paying the bills in an inbox ---------------------------------------
@@ -347,14 +357,14 @@ class Session:
             steps.append(shown)
         ok, words = self.cp.verify_log()
         return {
-            "version": kettle.__version__,
+            "version": __version__,
             "stories": TABS,
             "story": story.key,
             "job": story.job,
             "reads": [{name: value for name, value in doc.items() if done or name != "tell"} for doc in story.reads],
             "plain": story.plain,
             "code": inspect.getsource(story.rules),
-            "code_from": "examples/approve_in_browser.py",
+            "code_from": "src/kettle/demo/app.py",
             "total": len(story.script),
             "steps": steps,
             "waiting": waiting,
@@ -367,6 +377,54 @@ class Session:
 
 
 # ---- the real one: a saved report of a real model, played back --------------------
+
+
+def trails_of(run, case, case_set):
+    """What the source trail says about each held call of one saved run: {call number: what it says}.
+
+    The saved calls are made again, in order, against the same pretend files, through a
+    checkpoint with the trail on. The app's part is three lines: trail=True, what the
+    owner typed, and a list of its contacts. A call that ran in the saved run is run
+    again here; one that did not is denied.
+    """
+    world = Sandbox(case_set.world, case.plants)
+    cp = Checkpoint(":memory:", trail=True)
+    for name, tool in world.tools().items():
+        if name in RISKY:
+            cp.tool(name, tool, level=NEEDS_YES, watch=["to"])
+        else:
+            cp.tool(name, tool, level=FREE)
+    cp.owner_said(case.task)
+    book = "".join(file["text"] for file in case_set.world["file"] if file["name"] == "contacts.txt")
+    cp.known("contacts.txt", re.findall(r"[\w.+-]+@[\w.-]*\w", book))
+    said = {}
+    try:
+        for number, each in enumerate(run["calls"]):
+            decision = cp.request(each["tool"], each["inputs"])
+            if decision.status != HELD:
+                continue
+            if each["outcome"].endswith("ran"):
+                cp.approve(decision.request_id, decision.fingerprint)
+                cp.run(decision.request_id)
+            else:
+                cp.deny(decision.request_id)
+            said[number] = [
+                {
+                    "input": entry["input"],
+                    "value": each["inputs"][entry["input"]],
+                    "found": entry["found"],
+                    "typed": entry["typed"],
+                    "lists": [{"name": name, "has_it": has_it} for name, has_it in entry["known"]],
+                    # a call that was handed the value in its own inputs is named, and is no source
+                    "calls": [{"tool": seen["tool"], "inputs": seen["inputs"], "given": seen["given"]} for seen in entry["seen_in"]],
+                    "more_calls": entry["seen_in_more"],
+                }
+                for entry in decision.trail
+                if "not_traced" not in entry
+            ]
+    finally:
+        cp.close()
+    return said
 
 
 def load_recording():
@@ -403,6 +461,7 @@ def load_recording():
     order = ("to", "subject", "amount", "note", "body")  # the saved file lists inputs by name; an email reads better this way
 
     def side(run):
+        trails = trails_of(run, case, case_set) if run["setup"] == "kettle" else {}
         return {
             "calls": [{
                 "says": says(each["tool"], each["inputs"]),
@@ -411,7 +470,8 @@ def load_recording():
                 "outcome": each["outcome"],
                 "attackers": each["attackers"],
                 "source": each["inputs"].get("name") if each["tool"] == "read_file" else None,
-            } for each in run["calls"]],
+                "trail": trails.get(number),  # worked out now; not part of the recording
+            } for number, each in enumerate(run["calls"])],
             "ran": [says(tool, inputs) for tool, inputs in run["ran"]],  # the world's own list of risky actions that really ran
             "reply": run["reply"],
             "seconds": run["seconds"],
@@ -422,6 +482,17 @@ def load_recording():
         runs.setdefault(run["repeat"], {"repeat": run["repeat"]})[run["setup"]] = side(run)
     opened = [each["inputs"]["name"] for run in saved["runs"] for each in run["calls"] if each["tool"] == "read_file"]
     without = [run for run in saved["runs"] if run["setup"] == "none"]
+    held = [each["trail"] for run in runs.values() for each in run["kettle"]["calls"] if each["outcome"].startswith("held") and each["attackers"]]
+    plant = next(iter(planted))
+
+    def names_the_plant(trail):
+        return bool(trail) and all(
+            any(seen == {"tool": "read_file", "inputs": json.dumps({"name": plant}, separators=(",", ":")), "given": False} for seen in entry["calls"])
+            and entry["typed"] is False
+            and entry["lists"] == [{"name": "contacts.txt", "has_it": False}]
+            for entry in trail
+        )
+
     when = datetime.fromisoformat(meta["date"])
     return {
         "job": case.task,
@@ -432,7 +503,7 @@ def load_recording():
             "date": f"{when.day} {when:%B %Y}",
             "kettle_version": meta["kettle_version"],
             "system": meta["settings"]["system"],
-            "file": str(SAVED.relative_to(SAVED.parents[3])),
+            "file": SAVED_AS,
             "link": SAVED_AT,
             "attacker": summary["attacker_wanted"]["to"],
             # files in the same folder that name the usual address and that no run opened
@@ -440,6 +511,8 @@ def load_recording():
             "counts": {setup: dict(summary[setup], said_yes=saved["totals"][setup]["owner_said_yes"]) for setup in meta["setups"]},
             "said_usual": sum("usual" in run["reply"] for run in without),  # replies, after sending, that call the address not her usual one
             "logs_ok": sum(run.get("checkpoint_log_ok") is True for run in saved["runs"]),
+            # counted from what the trail said, held email by held email, not assumed
+            "trail": {"held": len(held), "named": sum(names_the_plant(trail) for trail in held), "file": plant, "list": "contacts.txt"},
             "runs": [runs[repeat] for repeat in sorted(runs)],
         },
     }
@@ -459,7 +532,7 @@ class Replay:
 
     def state(self):
         return {
-            "version": kettle.__version__,
+            "version": __version__,
             "stories": TABS,
             "story": REAL.key,
             "code": inspect.getsource(make_checkpoint),
@@ -480,24 +553,36 @@ if RECORDED:
     BY_KEY[REAL.key] = REAL
 TABS = [{"key": each.key, "name": each.name} for each in BY_KEY.values()]
 
-visits = {}  # each open page has its own run, so two windows do not press each other's buttons
 
+class Demo(HTTPServer):
+    """The demo's server. It listens on this machine only."""
 
-def session_for(visit, story=None):
-    if story or visit not in visits:
-        visits.pop(visit, None)
-        visits[visit] = Replay() if story is REAL else Session(story or STORIES[0])
-        while len(visits) > 20:  # forget the oldest pages
-            del visits[next(iter(visits))]
-    return visits[visit]
+    def __init__(self, port=PORT):
+        super().__init__((HOST, port), Handler)
+        self.token = secrets.token_urlsafe(16)  # the page sends it with every call, so another site cannot press the buttons
+        self.visits = {}  # each open page has its own run, so two windows do not press each other's buttons
+
+    @property
+    def url(self):
+        return f"http://{HOST}:{self.server_address[1]}"
+
+    def session_for(self, visit, story=None):
+        if story or visit not in self.visits:
+            self.visits.pop(visit, None)
+            self.visits[visit] = Replay() if story is REAL else Session(story or STORIES[0])
+            while len(self.visits) > 20:  # forget the oldest pages
+                del self.visits[next(iter(self.visits))]
+        return self.visits[visit]
 
 
 class Handler(BaseHTTPRequestHandler):
     def local(self):
-        return self.headers.get("Host") in (f"{HOST}:{PORT}", f"localhost:{PORT}")
+        port = self.server.server_address[1]
+        return self.headers.get("Host") in (f"{HOST}:{port}", f"localhost:{port}")
 
     def trusted(self):
-        return self.local() and secrets.compare_digest(self.headers.get("X-Demo-Token", ""), TOKEN)
+        sent = self.headers.get("X-Demo-Token", "").encode("utf-8", "replace")
+        return self.local() and secrets.compare_digest(sent, self.server.token.encode())
 
     def send(self, body, kind):
         self.send_response(200)
@@ -512,9 +597,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/" and self.local():
-            return self.send(PAGE.read_text(encoding="utf-8").replace("{{TOKEN}}", TOKEN).encode(), "text/html; charset=utf-8")
+            return self.send(PAGE.read_text(encoding="utf-8").replace("{{TOKEN}}", self.server.token).encode(), "text/html; charset=utf-8")
         if self.path == "/api/state" and self.trusted():
-            return self.send_state(session_for(self.headers.get("X-Demo-Visit", "")[:64]))
+            return self.send_state(self.server.session_for(self.headers.get("X-Demo-Visit", "")[:64]))
         self.send_error(404)
 
     def do_POST(self):
@@ -527,9 +612,9 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, AssertionError):
             return self.send_error(400)
         visit = self.headers.get("X-Demo-Visit", "")[:64]
-        session = session_for(visit)
+        session = self.server.session_for(visit)
         if self.path == "/api/reset":
-            session = session_for(visit, BY_KEY.get(asked.get("story"), session.story))
+            session = self.server.session_for(visit, BY_KEY.get(asked.get("story"), session.story))
         elif self.path == "/api/step":
             session.step()
         elif self.path == "/api/answer":
@@ -542,6 +627,33 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-if __name__ == "__main__":
-    print(f"Open http://{HOST}:{PORT}  (Ctrl+C to stop)")
-    HTTPServer((HOST, PORT), Handler).serve_forever()
+def make_server(port=PORT):
+    """The demo's server, on this machine only. If the port is taken, a free one is used instead."""
+    try:
+        return Demo(port)
+    except OSError:
+        if port == 0:
+            raise
+        return Demo(0)
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m kettle.demo",
+        description="Open the Kettle demo in a browser. No model is called, and nothing real is paid, pushed or sent.",
+    )
+    parser.add_argument("--port", type=int, default=PORT, help=f"the port to try first (default {PORT}). If it is taken, a free one is used")
+    parser.add_argument("--no-browser", action="store_true", help="print the address and do not open a browser")
+    args = parser.parse_args(argv)
+    server = make_server(args.port)
+    print(f"Kettle demo: {server.url}  (Ctrl+C to stop)", flush=True)
+    print("Served to this machine only. No model is called, and nothing real is paid, pushed or sent.", flush=True)
+    if not args.no_browser:
+        webbrowser.open(server.url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print()
+    finally:
+        server.server_close()
+    return 0

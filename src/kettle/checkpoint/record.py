@@ -19,6 +19,8 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from .trail import EMPTY, MAX_ITEMS, NOT_TEXT, TOO_MANY
+
 RECORD_VERSION = 1
 MAX_RECORD_BYTES = 1_000_000
 MAX_DEPTH = 32
@@ -131,7 +133,7 @@ class ActionRecord:
     def actor(self) -> Optional[str]:
         return self._body()["actor"]
 
-    def preview(self, summary: Optional[str] = None, first_time: Optional[dict] = None) -> str:
+    def preview(self, summary: Optional[str] = None, first_time: Optional[dict] = None, trail: Optional[list] = None) -> str:
         """What a human is shown before saying yes. Written here, from the record.
 
         It is plain ASCII, no line is longer than PREVIEW_WIDTH, and it can be read
@@ -140,12 +142,18 @@ class ActionRecord:
         first_time names the inputs to mark as new: each name maps to None for the
         whole value, or to the numbers (from 1) of the new items in a list. The
         marks are "!" notes. They are not part of the record or its fingerprint.
+
+        trail is what Trail.trace() gave for the watched inputs: where each value
+        was seen before. It is written as "!" notes too, under the input.
         """
         inputs = self.inputs()
+        traced, missing = _trail_lines(trail, inputs, "      ") if trail else ({}, 0)
         marked = {key: _first_time_lines(items, "      ") for key, items in (first_time or {}).items() if key in inputs}
         lines = []
         if marked:
             lines.append(f"! {len(marked)} input{' below is' if len(marked) == 1 else 's below are'} marked first time")
+        if missing:
+            lines.append(f"! source not found for {missing} value{'' if missing == 1 else 's'} below")
         if summary:
             lines += _text_lines("Summary (written by the app): ", [], summary, "  ")
         lines += _text_lines("Action: ", [], self.tool, "  ")
@@ -161,6 +169,7 @@ class ActionRecord:
             else:
                 lines += _json_lines("  ", label, value, "      ", noted=key)
             lines += marked.get(key, [])
+            lines += traced.get(key, [])
         lines.append(f"Fingerprint: {self.fingerprint}")
         return "\n".join(lines)
 
@@ -264,6 +273,108 @@ def _first_time_lines(items: Optional[list], indent: str) -> list[str]:
     mark = indent + "! "
     text = f"first time: no approved action has run with {what} before"
     return textwrap.wrap(text, width=PREVIEW_WIDTH, initial_indent=mark, subsequent_indent=mark)
+
+
+def _age(seconds: float) -> str:
+    whole = int(seconds)
+    for size, name in ((86400, "day"), (3600, "hour"), (60, "minute"), (1, "second")):
+        if whole >= size:
+            return f"{whole // size} {name}{'' if whole // size == 1 else 's'}"
+    return "under a second"
+
+
+_NOT_TRACED = {
+    NOT_TEXT: "not traced, because it is not text",
+    EMPTY: "not traced, because it is empty",
+    TOO_MANY: f"only items 1 to {MAX_ITEMS} of this list were traced",
+}
+
+
+def _trail_lines(trail: Any, inputs: dict, indent: str) -> tuple[dict, int]:
+    """The notes under each watched input that say where its value was seen before.
+
+    Returns the lines for each input, and how many values no source was found for.
+
+    The words are fixed. The two things that are not, the earlier call (its inputs
+    were chosen by the model) and the name of a list, are written out the way a
+    value is. Any note that does not fit on one line carries on after "! +". So
+    nothing in them can pass for a note of its own.
+
+    A call that was handed the value in its own inputs is named, and is not counted
+    as a source. Nor is a call that returned the value after the agent had already
+    used it in the inputs of some call.
+
+    A trail says where the characters were seen. It never says the action is fine.
+    """
+    mark, more = indent + "! ", indent + "! + "
+    out: dict = {}
+    missing = 0
+    if type(trail) not in (list, tuple):
+        raise RecordError("the trail must be a list")
+    for entry in trail:
+        try:
+            key, item = entry["input"], entry["item"]
+            if type(key) is not str or not (item is None or (type(item) is int and item >= 1)):
+                raise TypeError
+            if key not in inputs:
+                continue
+            lines = out.setdefault(key, [])
+            who = "source: " if item is None else f"source, item {item}: "
+
+            def say(text: str) -> None:
+                lines.extend(textwrap.wrap(who + text, width=PREVIEW_WIDTH, initial_indent=mark, subsequent_indent=more))
+
+            if "not_traced" in entry:
+                say(_NOT_TRACED[entry["not_traced"]])
+                continue
+            seen, extra, typed, known, lost = entry["seen_in"], entry["seen_in_more"], entry["typed"], entry["known"], entry["lost"]
+            if type(seen) not in (list, tuple) or type(known) not in (list, tuple) or not (typed is None or type(typed) is bool):
+                raise TypeError
+            if type(extra) is not int or extra < 0 or type(lost) is not int or lost < 0:
+                raise TypeError
+            unsure = entry.get("unsure", False)  # a trail worked out before these were added has neither
+            if type(unsure) is not bool:
+                raise TypeError
+            calls = []
+            for call in seen:
+                tool, label, age, given, used = call["tool"], call["inputs"], call["seconds_before"], call["given"], call.get("used_before", False)
+                if type(tool) is not str or not tool or type(label) is not str or type(given) is not bool or type(used) is not bool:
+                    raise TypeError
+                if not (age is None or (type(age) in (int, float) and math.isfinite(age) and age >= 0)):
+                    raise TypeError
+                calls.append((tool, label, age, given, used))
+            lists = []
+            for name, listed in known:
+                if type(name) is not str or type(listed) is not bool:
+                    raise TypeError
+                lists.append((name, listed))
+        except (KeyError, TypeError, ValueError):
+            raise RecordError("the trail is not in the shape Trail.trace() gives") from None
+
+        # Calls that count as a source come first, so if no call named here does, none of the rest does.
+        if all(given or used for _, _, _, given, used in calls) and typed is not True and not any(listed for _, listed in lists):
+            missing += 1
+            lines.append(mark + "source not found for " + ("this value" if item is None else f"item {item}"))
+        for name, listed in lists:
+            lines += _fold(mark + who + ("in" if listed else "not in") + " the app's list ", ['"'] + _pieces(name, quoted=True) + ['"'], more)
+        if typed is not None:
+            say("the owner typed it" if typed else "the owner did not type it")
+        for tool, label, age, given, used in calls:
+            say("returned by this earlier call" + ("" if age is None else f", {_age(age)} before") + ":")
+            lines += _fold(mark + "call: ", _pieces(tool, quoted=False) + ([" "] if label else []) + _pieces(label, quoted=False), more)
+            if given:
+                say("that call was handed it in its own inputs, so it is no source")
+            elif used and not unsure:
+                say("the agent used it before that call, so it is no source")
+        if unsure and calls:
+            say("too many calls to know if the agent used it first: no source")
+        if extra:
+            say(f"and returned by {extra} more earlier call{'' if extra == 1 else 's'}")
+        if not calls:
+            say("not returned by any earlier call")
+            if lost:
+                say(f"{lost} earlier result{'' if lost == 1 else 's'} not kept in full, so a match there is missed")
+    return out, missing
 
 
 def _text_lines(head: str, label: list[str], text: str, indent: str, noted: str = "") -> list[str]:

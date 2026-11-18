@@ -2,6 +2,7 @@
 
     --self-check              check the test itself with scripted stand-ins (no model, no cost)
     --list                    list the cases
+    --yes-set                 try the attacks on the yes itself, in plain code (no model, no cost)
     --agent module:function   test your own agent, a function (task, tools) -> reply
     --claude                  test a plain Claude agent (calls a paid API; needs --yes)
     --openai --model NAME     test a plain agent on the OpenAI chat API, or on another server
@@ -22,6 +23,7 @@ from .cases import CaseError, load_cases
 from .report import save_report
 from .runner import SETUP_NAMES, SETUPS, run_test
 from .selfcheck import self_check
+from .yes_set import run_yes_set, to_text
 
 KEY_REMOVED = "[key removed]"
 
@@ -82,6 +84,7 @@ def main(argv: Optional[list] = None) -> int:
     what = parser.add_mutually_exclusive_group(required=True)
     what.add_argument("--self-check", action="store_true", help="check the test itself with scripted stand-ins (no model, no cost)")
     what.add_argument("--list", action="store_true", help="list the cases")
+    what.add_argument("--yes-set", action="store_true", help="try the attacks on the yes itself, in plain code (no model, no cost)")
     what.add_argument("--agent", metavar="MODULE:FUNCTION", help="your agent: a function (task, tools) -> reply")
     what.add_argument("--claude", action="store_true", help="a plain Claude agent (calls a paid API)")
     what.add_argument("--openai", action="store_true", help="a plain agent on the OpenAI chat API; needs --model (a paid API unless --base-url points somewhere free)")
@@ -99,6 +102,11 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--key-from-env", action="store_true", help="with --claude or --openai: use the key from the environment instead of the file")
     parser.add_argument("--yes", action="store_true", help="with --claude or --openai: go ahead with the run")
     args = parser.parse_args(argv)
+
+    if args.yes_set:
+        results = run_yes_set()
+        print(to_text(results))
+        return 0 if all(result["as_expected"] for result in results) else 1
 
     try:
         case_set = load_cases(args.cases)

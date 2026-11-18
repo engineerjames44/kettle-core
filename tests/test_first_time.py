@@ -374,3 +374,36 @@ def test_a_thousand_random_marked_previews_read_back_to_exactly_the_record_they_
         notes = [line for line in preview.splitlines() if "first time" in line and line.lstrip(" ").startswith("! ")]
         assert len(notes) >= len(first_time) + (1 if first_time else 0)
         assert max(len(line) for line in preview.splitlines()) <= PREVIEW_WIDTH
+
+
+# ---- pending() also says which inputs are watched at all ----
+
+
+def test_pending_names_the_watched_inputs_new_or_not(cp):
+    """first_time is the watched inputs holding something new. watched is every watched input the action has."""
+    say_yes_and_run(cp, "send_many", {"to": "sam@example.com", "body": "hi", "cc": "ana@example.com"})
+    cp.request("send_many", {"to": "sam@example.com", "body": "hi", "cc": "new@example.com"})
+    cp.request("send_many", {"to": "sam@example.com", "body": "hi"})  # cc is watched, and this action does not have it
+    cp.request("send_many", {"to": "sam@example.com", "body": "hi", "cc": "ana@example.com"})
+    assert [(item["watched"], item["first_time"]) for item in cp.pending()] == [
+        (["cc", "to"], ["cc"]),
+        (["to"], []),
+        (["cc", "to"], []),
+    ]
+
+
+def test_pending_names_no_watched_inputs_for_a_tool_that_watches_none(cp, world):
+    cp.tool("plain", world.send_email, level=NEEDS_YES)
+    cp.request("plain", dict(EMAIL))
+    (item,) = cp.pending()
+    assert item["watched"] == [] and item["first_time"] == []
+
+
+def test_watched_follows_the_rules_as_they_are_now(cp, world):
+    """Like the first-time mark, it is worked out when asked for, from the rules as they stand."""
+    cp.request("send_email", dict(EMAIL))
+    assert cp.pending()[0]["watched"] == ["to"]
+    cp.tool("send_email", world.send_email, level=NEEDS_YES, watch=["body", "to"], replace=True)
+    assert cp.pending()[0]["watched"] == ["body", "to"]
+    cp.tool("send_email", world.send_email, level=NEEDS_YES, replace=True)
+    assert cp.pending()[0]["watched"] == []

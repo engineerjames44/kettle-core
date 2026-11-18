@@ -10,7 +10,12 @@ Two things for people who build AI agents, both free and open source (Apache-2.0
 **Status: early.** Version 0.1.0 is on PyPI as [`kettle-labs`](https://pypi.org/project/kettle-labs/). The
 interfaces will change. The attack test has had
 one day of runs on two real models, by us: see "What we have measured so far" below and [RESULTS.md](https://github.com/engineerjames44/kettle-core/blob/main/RESULTS.md).
-Everything in "What has been checked" below was measured on 2026-11-15 and can be run again from this folder.
+Everything in "What has been checked" below can be run again from this folder, and says when it was measured.
+
+**In this repository and not yet in a release:** the source trail, a yes from your phone over Telegram, the
+attacks on the yes itself (`--yes-set`), the browser demo (`python -m kettle.demo`) and receipts
+(`python -m kettle.verify`). `pip install kettle-labs` gives 0.1.0, which has none of them. Each is marked
+where it is described below, and is run from a copy of this repository.
 
 ## Set up
 
@@ -37,6 +42,24 @@ python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 .venv/bin/python examples/quickstart.py
 ```
+
+## See it in a browser
+
+*In this repository and not yet in a release.*
+
+```
+.venv/bin/python -m kettle.demo
+```
+
+This opens a page with three short stories: a money assistant, a coding agent and a support bot. In each, a
+scripted agent works through a task, and its risky actions wait for your Approve or Deny. The checkpoint
+decides what runs and the page only draws it. A fourth tab plays back a saved run of `claude-opus-5-5` from
+15 November 2026, with the model's replies and tool calls word for word.
+
+- No model is called, and nothing real is paid, pushed or sent.
+- The page is served to this machine only (`127.0.0.1`), and its buttons only work from the page itself.
+- The page loads its fonts from Google Fonts, so your browser asks Google for them.
+- It is a demo. It is not an approval screen for your own agent.
 
 ## The checkpoint
 
@@ -71,9 +94,11 @@ What it does:
 - The log records each tool that was started, by name and fingerprint, and what happened to it.
   It also records each time something asked to run a request that had no yes, or whose yes was already used.
   `verify_log()` checks that no entry was edited, removed from the middle or reordered.
-- The inputs of a free action that ran are not stored. Two things can still put part of them in the store
-  file: when a tool fails, the first 500 characters of its error message are logged, and when inputs do not
-  fit a tool, the refusal can name the input that did not fit.
+- The inputs of a free action that ran are not stored. Three things can still put part of them in the store
+  file: when a tool fails, the first 500 characters of its error message are logged; when inputs do not
+  fit a tool, the refusal can name the input that did not fit; and with the source trail on (below), the log
+  entry of a held action names each earlier call a value was traced to, with up to 160 characters of that
+  call's inputs.
 - Several threads or processes can share one store file. Only one of them can use a given yes.
 
 ### Who is asking
@@ -110,7 +135,8 @@ Fingerprint: ...
 ```
 
 `decision.first_time` and `pending()` carry the same names, so an approval screen can show the mark its own
-way. What the mark does and does not mean:
+way. In this repository and not yet in a release, each entry of `pending()` also has `watched`: every watched
+input the action has, new or not. What the mark does and does not mean:
 
 - **It is about this store file only.** "Used before" means an approved action of that tool was started with
   exactly that value in that input, as recorded in this store. The history begins when this version first
@@ -128,6 +154,121 @@ way. What the mark does and does not mean:
   marked the next time. A watched input that is left out, or an empty list, is not marked either.
 - The store keeps a hash for each value and not the value. Someone who can write the store file can add
   history, like everything else under "The store file is trusted" below.
+
+### Where a value came from
+
+*In this repository and not yet in a release.*
+
+The first-time mark says a value is new. It does not say where the agent got it. The checkpoint sees every
+read as well as every risky action, because both go through it, so it can look. Switch the source trail on,
+and tell it the two things only your app knows:
+
+```python
+cp = Checkpoint("kettle.db", trail=True)
+cp.tool("read_file", read_file, level=FREE)
+cp.tool("send_email", send_email, level=NEEDS_YES, watch=["to"])
+
+cp.owner_said(task)                                       # what the owner typed, word for word
+cp.known("contacts", ["sam@example.com", "ana@example.com"])   # a list your app trusts, under a name
+```
+
+When an action is held, each watched text value is looked for in what earlier calls returned, in what the
+owner typed and in each list. The preview says what was found:
+
+```
+! 1 input below is marked first time
+Action: "send_email"
+  "body": "Summary attached."
+  "to": "sam@examp1e.com"
+      ! first time: no approved action has run with this value before
+      ! source: not in the app's list "contacts"
+      ! source: the owner did not type it
+      ! source: returned by this earlier call, under a second before:
+      ! call: read_file {"name":"meeting-notes.txt"}
+Fingerprint: ...
+```
+
+A value seen nowhere gets `! source not found for this value`, and the top of the preview counts those.
+`decision.trail` and `pending()` carry the same findings. `cp.clear_trail()` forgets what calls returned and
+what the owner typed, for example when a new task starts. The lists stay.
+
+What the trail does and does not mean:
+
+- **It is plain matching, with no model in it.** In a list: the value equals an entry, character for
+  character. Typed by the owner: the value stands in the text as a whole word, so `smith@example.com` is not
+  found in `john.smith@example.com`. In a result: the exact characters appear anywhere in what the call
+  returned.
+- **It says where characters were seen. It never says an action is all right.** Played over the runs saved
+  on 15 November, every held action traced to something the agent had read, wanted or not: 31 of 31 aimed at
+  the attacker, and 55 of 55 others. What differed was which call. So the trail does not sort good from bad
+  by itself: see [RESULTS.md](https://github.com/engineerjames44/kettle-core/blob/main/RESULTS.md).
+- **A value the model rewrote is not matched**, such as another spelling or a sum. The trail then says
+  "source not found".
+- **A tool made to say the value back is not a source.** A call that was handed the value in its own inputs
+  is named, with a line saying it is no source. A result also does not count if the agent had already put
+  the value into the inputs of an earlier call. So writing a value to a file and reading it back makes no
+  source.
+- **Written in two halves, it still gets through.** If the agent writes the value in two pieces and reads
+  the file back, no call it made held the whole value, and the trail names the read as a source. Following
+  pieces is not built.
+- **`owner_said` is trusted.** Pass it only text the owner typed. If text from the model, a tool or a page
+  reaches it, the preview will say the owner typed something they did not.
+- **Only the watched inputs are traced, and only text.** In a list, the first 20 items.
+- **It is kept in memory by one Checkpoint object.** What calls returned and what the owner typed are never
+  written to the store file, and another process sharing the file does not see them. It keeps the last 500
+  results, up to 1,000,000 characters of each and 8,000,000 in all. When something was dropped or cut short,
+  a value that is not found says so. The trail the human was shown is written to the log with the held
+  action.
+- **When it cannot tell, no call counts as a source.** If more calls have been made than it keeps the inputs
+  of (20,000 calls, or 8,000,000 characters of inputs), every result is treated as no source until
+  `clear_trail()` is called.
+- **The trail is not part of what a yes covers.** The fingerprint is of the action alone.
+
+### Receipts
+
+*In this repository and not yet in a release.*
+
+```
+.venv/bin/python -m kettle.verify kettle.db
+```
+
+This prints one receipt for each action that was started after a yes: who said yes, when, and to exactly
+what.
+
+```
+Kettle receipts for kettle.db
+
+The log: 6 entries, chain intact.
+In it: held for a yes 1, denied 0, expired 0, cancelled 0, free actions started 1 (their inputs are not stored).
+
+Receipt 1: send_email
+  Yes: by owner, on Telegram, 2026-11-17 05:32:23 UTC
+  Started: 2026-11-17 05:32:23 UTC
+  Outcome: ran, 2026-11-17 05:32:23 UTC
+  Action: "send_email"
+    "body": "See you at 3."
+    "to": "sam@example.com"
+  Fingerprint: 85deea34637d67795494d820347b13308b4ca3bfbf85758f1fda5a43aed43da3
+
+1 receipt. Each action is the one its yes was for, and the log is whole.
+This cannot show entries cut from the end of the log, or a file rewritten by someone who can write it.
+```
+
+- **The file is only read.** It is opened read-only. It is never changed, and a file that is not there is
+  not made. It can be run while a checkpoint is using the file.
+- **What is checked.** The log's chain, with the same check as `verify_log()`. The fingerprint of the stored
+  action is worked out again and has to be the one the log says was approved and started, so the inputs
+  printed are the ones the yes was for. Each start has to have a yes for the same action before it in the
+  log. Anything that does not add up is printed, and the action is then not printed.
+- **How it ends.** With 0 if everything adds up, 1 if something does not, and 2 if the file cannot be read.
+- **An action that failed part way, or has no end in the log, is printed as "NOT KNOWN"**, not as run.
+- **"Who" is the name your app gave to `approve()`.** The checkpoint does not check who a person is. The
+  times are from the clock of the machine the checkpoint ran on.
+- **Free actions get no receipt.** They are counted, and their inputs are not stored.
+- **It cannot show a file rewritten by someone who can write it**, like everything else under "The store
+  file is trusted" below. Entries cut from the end of the log leave a whole chain. A receipt run does notice
+  a request the file still says was started, or ended, with no entry for it. It does not notice if the
+  stored request was changed as well.
 
 ### What the human is shown
 
@@ -233,6 +374,60 @@ What to know about these pieces:
   not called the real API since. The OpenAI pieces have only been run against a stand-in server on our own
   machine, with the real `openai` package. They have not been run against OpenAI's API.
 
+### A yes from your phone
+
+*In this repository and not yet in a release. It has only been run against a pretend Telegram on our own
+machine. It has not been tried with the real Telegram.*
+
+A held action can be sent to you on Telegram, with an Approve and a Deny button under the preview:
+
+```python
+import os
+from kettle.adapters import through
+from kettle.telegram import TelegramApprover
+
+approver = TelegramApprover(cp, token=os.environ["KETTLE_TELEGRAM_TOKEN"], chat_id=123456789)
+call = through(cp.gate, approver.on_held)
+```
+
+`token` is the token of a bot you made for this and nothing else. `chat_id` is the number of your own
+private chat with that bot. It needs no other package. `call` now waits for the phone. Approve runs the
+action once and gives the model its result. Deny runs nothing, and neither does no answer before the request
+expires.
+
+What counts as a yes:
+
+- Only a press of the Approve button. Typed text is never an answer.
+- Only a press by the owner, in the owner's private chat with the bot. A group is refused at setup, because
+  anyone in it could press.
+- Only a press on the message this approver sent for that action. A button carries a random code that is
+  kept in memory, not the request's id or fingerprint. So a button made by anyone else names nothing, and
+  buttons from before a restart do nothing.
+- The yes is given to the checkpoint with the fingerprint that was on the screen. If the stored action is no
+  longer that one, the checkpoint refuses.
+- A press less than 2 seconds after the buttons appeared is not counted (`min_read_seconds`), so a tap meant
+  for something else does not approve. Deny is never too soon.
+- A preview that needs more than 5 messages is sent with a Deny button only.
+- At most 3 actions are on the phone at a time (`at_once`). The rest wait.
+- If Telegram cannot be reached, or answers with an error, nothing is approved.
+
+What to know:
+
+- **The real Telegram has not been tried.** The approver is written from the Bot API documents and tested
+  against a stand-in on this machine that follows them. Whether the app shows the preview as fixed-width
+  text, as asked, is not checked.
+- **The preview leaves your machine.** It passes through Telegram to your phone, and anyone who can read
+  that chat can read it.
+- **A narrow phone wraps the preview's 78-character lines.** A wrapped line can then begin with text from
+  inside a value, where the preview's own marks would be. Not measured, and not fixed.
+- **The token is the key to your bot.** Your code reads it and hands it over. The approver never puts it in
+  an error, in `repr()` or in anything it prints, and does not send it on if the address redirects. Give the
+  bot no other job: two programs cannot listen on one bot.
+- **Whoever holds the unlocked phone can press Approve.** The approver checks which account pressed, not who
+  is holding the phone.
+- **It is in the same process as your agent**, like the checkpoint. Code that runs there can reach the
+  checkpoint and approve its own action. See "What the checkpoint does not do" below.
+
 ## The attack test
 
 The test builds a small pretend world (an inbox, a few web pages, files, a calendar, and fake `send_email` and
@@ -327,6 +522,34 @@ What a report from this test does and does not show:
 - **It is not compared with other approval steps.** The only comparison is no checkpoint against the Kettle
   checkpoint.
 
+### Attacks on the yes itself
+
+*In this repository and not yet in a release.*
+
+The attack test asks what a model does with trick text. A second set asks something else: once an action is
+held, can a yes be got that the owner did not give, or be given for something other than what the owner was
+shown?
+
+```
+.venv/bin/python -m kettle.attacktest --yes-set      # no model, no cost
+```
+
+It tries 25 tricks in plain code, against the checkpoint, the preview, the Telegram approver and the source
+trail. The phone in it is a pretend Telegram on this machine. Each trick is judged on what the pretend world
+saw: whether the thief's email was sent, whether a yes was recorded, what the preview said. 23 are stopped.
+The other 2 are known limits. They get through, and the command says so every time it is run:
+
+- **Written in two halves.** The agent writes the thief's address to a file in two pieces and reads the
+  file back. The trail names the read as a source, because it matches whole values and no single call was
+  given the whole address.
+- **Code in the same process.** Code running in the same Python process as the checkpoint reaches it through
+  the gate and approves its own action. The gate is not a wall inside one process. Keep the checkpoint where
+  the agent's code cannot run.
+
+These are our own tricks against our own code, and somebody else will think of others. No case is about a
+person who is shown a true preview and says yes anyway. The write-up, with what was found and fixed while
+writing the set, is in [RESULTS.md](https://github.com/engineerjames44/kettle-core/blob/main/RESULTS.md).
+
 ### What we have measured so far
 
 We ran the test ourselves on 15 November 2026 with the built-in plain Claude agent, on `claude-opus-5-5` and
@@ -368,35 +591,48 @@ paths that go through it.
   approve by mistake. It is not a wall. Keeping the keys in a separate process is planned and is not built.
 - **The store file is trusted.** Someone who can write the file can forge a yes, make a used yes usable again,
   or change a log entry and write new hashes after it. `verify_log()` also cannot tell when entries were cut
-  from the end. (Changing a held request before the human answers is caught: the yes names the fingerprint the
-  human saw.)
+  from the end. The receipts notice such a cut only while the stored request still says it was started.
+  (Changing a held request before the human answers is caught: the yes names the fingerprint the human saw.)
 - **A free tool that crashes the process** leaves a "started" entry in the log with nothing after it. It is
   not in `needs_checking()`.
 
-Also not built: an approval screen (there is only the question in the terminal described above), limits over
-time (such as a daily spending cap), support for values that are not plain JSON (files are passed by name or
-by hash), a held-back case set, and a comparison with the approval steps built into agent frameworks.
+Also not built: an approval screen to put in your own app (there is the question in the terminal described
+above and, not yet in a release, the Telegram approver, which has not been tried with the real Telegram),
+limits over time (such as a daily spending cap), support for values that are not plain JSON (files are
+passed by name or by hash), a source trail that follows a value written in pieces, a held-back case set, and
+a comparison with the approval steps built into agent frameworks.
 
 ## What has been checked
 
-All of this uses no model and costs nothing. Measured on 2026-11-15, on macOS.
+All of this uses no model and costs nothing. Measured on 2026-11-17, on macOS, on the code in this
+repository, which is ahead of release 0.1.0. Where a row was measured earlier, on the 0.1.0 code, it says so.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| The tests | `.venv/bin/pytest` | With both extras installed (`claude` and `openai`): 604 passed on Python 3.14.8 and 3.15.2; on 3.11.18, 603 passed and 1 was skipped (it needs 3.14). With neither extra, on 3.15.2: 598 passed and 6 were skipped. |
+| The tests | `.venv/bin/pytest` | 967 passed on Python 3.14.8, with both extras installed (`claude` and `openai`). Not measured again on other versions or with no extras. For 0.1.0, on 2026-11-15: 604 passed on 3.14.8 and 3.15.2; on 3.11.18, 603 passed and 1 was skipped (it needs 3.14); with neither extra, on 3.15.2, 598 passed and 6 were skipped. |
 | The attack test's check of itself | `.venv/bin/python -m kettle.attacktest --self-check` | 8 of 8 checks held, on each of the two case sets (add `--cases fraud` for the second) |
-| Checkpoint broken on purpose | `.venv/bin/python checks/break_checkpoint.py` | 106 breaks tried, 106 caught by the tests |
+| Checkpoint and source trail broken on purpose | `.venv/bin/python checks/break_checkpoint.py` | 216 breaks tried, 216 caught by the tests |
 | Attack test broken on purpose | `.venv/bin/python checks/break_attacktest.py` | 107 breaks tried, 106 caught, 1 known and explained |
 | Adapters broken on purpose | `.venv/bin/python checks/break_adapters.py` | 43 breaks tried, 43 caught by the tests |
+| Telegram approver broken on purpose | `.venv/bin/python checks/break_telegram.py` | 122 breaks tried, 122 caught by the tests |
+| Attacks on the yes | `.venv/bin/python -m kettle.attacktest --yes-set` | 25 tried: 23 stopped, 2 got through, both known limits (named above) |
+| Attacks on the yes broken on purpose | `.venv/bin/python checks/break_yes_set.py` | 65 breaks tried, 65 caught by the tests |
+| Browser demo broken on purpose | `.venv/bin/python checks/break_demo.py` | 43 breaks tried, 43 caught by the tests |
+| Receipts broken on purpose | `.venv/bin/python checks/break_verify.py` | 51 breaks tried, 51 caught by the tests |
+| Source trail over the saved runs | `.venv/bin/python checks/trail_over_saved_runs.py` | 170 of 170 runs saved on 15 November played again. Of the held actions, 31 of 31 aimed at the attacker and 55 of 55 others traced to an earlier call, and none had no source found |
 | Previews read back | `.venv/bin/python checks/read_back.py` | 150,000 random records, 0 read back wrongly, no two different records sharing a preview |
-| The built package | see [RELEASING.md](https://github.com/engineerjames44/kettle-core/blob/main/RELEASING.md) | The wheel and the source archive build, and the wheel installed by itself on Python 3.11.18 passes the self-check on both case sets. On 2026-11-16, `pip install kettle-labs` from PyPI into an empty environment on Python 3.14.8 passed the same two self-checks |
+| The built package (0.1.0 only) | see [RELEASING.md](https://github.com/engineerjames44/kettle-core/blob/main/RELEASING.md) | Measured for 0.1.0, and not again with the newer code in it: the wheel and the source archive build, and the wheel installed by itself on Python 3.11.18 passes the self-check on both case sets. On 2026-11-16, `pip install kettle-labs` from PyPI into an empty environment on Python 3.14.8 passed the same two self-checks |
 
-- **The tests.** 226 are for the checkpoint, 301 for the attack test, 64 for the adapters, 8 run the
-  examples and 5 check that the tests stay on this machine. Of the checkpoint's, the 99 in
+- **The tests.** 380 are for the checkpoint, 301 for the attack test, 64 for the adapters, 114 for the
+  Telegram approver, 39 for the attacks on the yes, 25 for the browser demo and 30 for the receipts. 8 run
+  the examples and 6 check that the tests stay on this machine. Of the checkpoint's, the 102 in
   `tests/test_fixed_ways_around.py` are the ones that try a way around it (a changed action, a reused or
-  expired yes, a broken store, and so on), and the 41 in `tests/test_first_time.py` are for the first-time
-  mark. Most of them pass or fail on what the tools themselves wrote down as run, not on what the checkpoint
-  says. The rest are ordinary tests of the record, the preview, the log and shared stores.
+  expired yes, a broken store, and so on), the 44 in `tests/test_first_time.py` are for the first-time
+  mark and the 148 in `tests/test_trail.py` are for the source trail. Most of them pass or fail on what the
+  tools themselves wrote down as run, not on what the checkpoint says. The rest are ordinary tests of the
+  record, the preview, the log and shared stores.
+- **The Telegram tests use a pretend Telegram on this machine.** No test can reach the real one, and the
+  real one has not been tried.
 - **The 6 tests skipped without the extras** run the built-in agents with the real `anthropic` and `openai`
   packages against a stand-in server on this machine. They never call a paid API. The OpenAI agent and the
   OpenAI adapter tests also pass with `openai` 2.0.0, the oldest version the extra allows.
@@ -407,7 +643,8 @@ All of this uses no model and costs nothing. Measured on 2026-11-15, on macOS.
   twice", and the tests are run against the copy. A break the tests do not notice is a hole in the tests. The
   one break that is not caught removes the second of two checks the stand-in owner makes on an action; the
   first still refuses, so nothing changes that a test could see.
-- **Not tried at all:** the OpenAI agent against OpenAI's real API or any real model, and the question in
-  the terminal on Windows or Linux.
+- **Not tried at all:** the OpenAI agent against OpenAI's real API, the Telegram approver against the
+  real Telegram, a built package with the newer code in it, and the question in the terminal on Windows or
+  Linux.
 - These checks show the code does what its tests say. They were written alongside the code, and nobody
   independent has reviewed it.

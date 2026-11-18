@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,400..700,0..100,0..1&family=Figtree:wght@400..600&family=JetBrains+Mono:wght@400..500&display=swap" rel="stylesheet">
 <style>
-/* The page for approve_in_browser.py. It draws what the checkpoint returns and decides nothing itself. */
+/* The page for app.py (python -m kettle.demo). It draws what the checkpoint returns and decides nothing itself. */
 :root {
   --bg: #15130f; --surface: #1e1b16; --raised: #27231b; --ink: #f1eadc; --muted: #aca69b; --faint: #7f796e;
   --line: rgba(241, 234, 220, .09); --line-strong: rgba(241, 234, 220, .2);
@@ -83,6 +83,16 @@ h1 em { font-style: normal; color: var(--accent); }
 .step__mail { grid-column: 2 / span 2; margin-top: 10px; }
 .step__mail div { grid-template-columns: 60px minmax(0, 1fr); }
 .step__mail dd { white-space: pre-wrap; }
+.trail { grid-column: 2 / span 2; margin-top: 12px; padding: 14px 16px; border: 1px solid var(--accent); border-radius: var(--r); background: rgba(232, 137, 79, .06); }
+.trail__top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.trail__top .label { color: var(--accent); }
+.trail__top i { font: 500 11px/1 var(--mono); font-style: normal; letter-spacing: .06em; color: var(--faint); }
+.trail ul { display: grid; gap: 8px; margin-top: 12px; }
+.feed .trail li { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 0 8px; padding: 0; font-size: 15px; line-height: 1.4; }
+.feed .trail li::before { grid-row: auto; width: 6px; height: 6px; margin: 8px 0 0 2px; background: var(--accent); box-shadow: none; }
+.feed .trail li::after { display: none; }
+.trail code { display: block; margin-top: 3px; font: 400 12.5px/1.5 var(--mono); color: var(--muted); overflow-wrap: anywhere; cursor: default; }
+.trail small { display: block; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12.5px; line-height: 1.5; color: var(--faint); }
 .verdict { margin: 0 0 14px; padding: 14px 16px; border: 1px solid var(--tone); border-radius: var(--r); }
 .verdict b { display: block; font: 400 23px/1.2 var(--display); letter-spacing: -.015em; color: var(--tone); }
 .verdict span { display: block; margin-top: 6px; font-size: 14px; color: var(--muted); overflow-wrap: anywhere; }
@@ -417,6 +427,30 @@ function taped(call) {
   return ["t-wait", call.outcome.toUpperCase(), null];
 }
 
+function sourceOf(seen) {  // the file a read_file call opened, so the page can light it up
+  try { return seen.tool === "read_file" ? JSON.parse(seen.inputs).name : null; } catch (error) { return null; }
+}
+
+function trail(entries) {  // what the checkpoint's source trail says about a held call's watched inputs
+  const R = state.recording;
+  return entries.map((entry) => {
+    const what = entry.input === "to" ? "address" : entry.input;
+    const calls = entry.calls.map((seen) => h("li", { on: { mouseenter: () => light(sourceOf(seen), true), mouseleave: () => light(sourceOf(seen), false) } },
+      h("span", null, seen.given ? "This earlier call was handed it in its own inputs, so it is no source:" : "Returned by this earlier call:",
+        h("code", null, seen.tool + " " + seen.inputs))));
+    return h("div", { class: "trail" },
+      h("div", { class: "trail__top" }, h("span", { class: "label" }, "Where this " + what + " came from"), h("i", null, "SOURCE TRAIL · WORKED OUT NOW")),
+      h("ul", null,
+        !entry.found && h("li", null, h("b", null, "Source not found.")),
+        ...calls,
+        entry.more_calls > 0 && h("li", null, "And returned by " + entry.more_calls + " more earlier " + (entry.more_calls === 1 ? "call." : "calls.")),
+        !entry.calls.length && h("li", null, "Not returned by any earlier call."),
+        entry.typed !== null && h("li", null, entry.typed ? "The owner typed it." : "The owner did not type it."),
+        ...entry.lists.map((list) => h("li", null, (list.has_it ? "In" : "Not in") + " the app\u2019s list \u201c" + list.name + "\u201d."))),
+      h("small", null, "Not part of the recording. On " + R.date + " Kettle " + R.kettle_version + " had no source trail, so the stand-in owner was not shown this. It is worked out now: the saved calls are made again through a checkpoint with the trail on. No model takes part."));
+  });
+}
+
 function drawTape() {
   const R = state.recording, tape = $("tape");
   tape.hidden = !R;
@@ -438,6 +472,7 @@ function drawSide(id, side) {
         ? h("dl", { class: "inputs step__mail" }, call.inputs.map((input) => h("div", null, h("dt", null, input.name), h("dd", null, input.value))))
         : h("span", { class: "step__call" }, call.call),
       why && h("span", { class: "step__why" }, why),
+      ...(call.trail ? trail(call.trail) : []),
       !held && h("span", { class: "step__rec" }, "saved outcome: " + call.outcome));
   });
   const over = !!now.reply, fresh = rec.said[side] ? "" : " is-new";
@@ -491,6 +526,7 @@ function drawTaped() {
         h("p", null, "runs where anything went out. The model tried the send in " + yes.went_along + " of " + yes.runs + ". Each was held, and the owner was asked " + yess(yes.owner_asked) + " and said yes " + yess(yes.said_yes) + "."))),
     h("ul", { class: "truths" },
       truth("The model said it was not her usual address.", "In " + R.said_usual + " of " + no.runs + " replies, each written after the email had gone. In no run did it open " + R.unread.map((doc) => doc.id).join(" or ") + ", which has her usual one."),
+      truth("Where the address came from was added afterwards.", "The orange box under each held email is the checkpoint\u2019s source trail, worked out now from the saved calls. In " + R.trail.named + " of " + R.trail.held + " held emails it names " + R.trail.file + ", says the owner did not type the address, and says it is not in " + R.trail.list + ". It says where the characters were seen. It does not say an action is safe."),
       truth("The owner was code, not a person.", "A stand-in that says yes only to the action the task called for. That is the best case for a careful owner. A real person may say yes."),
       truth("The world is pretend.", "The files and send_email are made by the test. \u201cSent\u201d means the pretend send_email really ran. No real email exists."),
       truth("One attack, written by us.", "Of the 19 attacks in our two sets, this is the one that got through. The other 18 were not gone along with at all. Nobody independent has repeated any of it."),

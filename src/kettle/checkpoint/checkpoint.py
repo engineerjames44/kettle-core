@@ -26,6 +26,7 @@ from typing import Any, Callable, Optional
 from .record import ActionRecord, RecordError
 from .rules import FREE, NEEDS_YES, NEVER, Level, Refused, Rules, Tool
 from .store import Store, StoreError
+from .trail import Trail, TrailError
 
 RAN = "ran"
 HELD = "held"
@@ -60,6 +61,9 @@ class Decision:
 
     first_time is set on a held action: the watched inputs whose value no approved
     action has run with before. The preview marks the same inputs.
+
+    trail is set on a held action when the checkpoint was made with trail=True: for
+    each watched value, where it was seen before. The preview says the same.
     """
 
     status: str
@@ -71,17 +75,25 @@ class Decision:
     expires_at: Optional[float] = None
     result: Any = None
     first_time: tuple = ()
+    trail: tuple = ()
 
 
 class Checkpoint:
-    def __init__(self, path: str, *, hold_seconds: float = 600.0, clock: Callable[[], float] = time.time) -> None:
+    def __init__(self, path: str, *, hold_seconds: float = 600.0, clock: Callable[[], float] = time.time, trail: bool = False) -> None:
         """path is the SQLite file that holds requests and the log (":memory:" for a throwaway one).
 
         hold_seconds is how long a held request stays answerable. The yes and the
         run must both happen before that time is up.
+
+        trail=True turns the source trail on: this object keeps, in memory, what
+        every call returned, and a held action's preview says where each watched
+        value was seen before. See owner_said() and known().
         """
         if type(hold_seconds) not in (int, float) or not math.isfinite(hold_seconds) or hold_seconds <= 0:
             raise CheckpointError("hold_seconds must be a positive number")
+        if type(trail) is not bool:
+            raise CheckpointError("trail must be True or False")
+        self._trail = Trail() if trail else None
         self._hold_seconds = float(hold_seconds)
         self._clock = clock
         self._rules = Rules()
@@ -119,6 +131,40 @@ class Checkpoint:
     def rules_digest(self) -> str:
         return self._rules.digest()
 
+    # ---- the source trail ----------------------------------------------------
+
+    def owner_said(self, text: str) -> None:
+        """Tell the trail what the owner typed, word for word, so a value they gave can be traced to them.
+
+        Only ever pass text that came from the owner. Text from the model, a tool
+        or a page must never reach this: the preview would then say the owner
+        typed something they did not.
+        """
+        try:
+            self._the_trail().owner_said(text)
+        except TrailError as error:
+            raise CheckpointError(str(error)) from None
+
+    def known(self, name: str, values: Any) -> None:
+        """Give the trail a list your app trusts, such as the owner's contacts, under a name the preview can show.
+
+        A value is "in the list" only if it equals an entry, character for
+        character. Giving the same name again replaces the list.
+        """
+        try:
+            self._the_trail().known(name, values)
+        except TrailError as error:
+            raise CheckpointError(str(error)) from None
+
+    def clear_trail(self) -> None:
+        """Forget what earlier calls returned and what the owner typed, for example when a new task starts. Lists stay."""
+        self._the_trail().clear()
+
+    def _the_trail(self) -> Trail:
+        if self._trail is None:
+            raise CheckpointError("the source trail is off: make the checkpoint with trail=True")
+        return self._trail
+
     @property
     def gate(self) -> "Gate":
         """What an agent loop needs: a way to ask, and the list of tool names.
@@ -146,6 +192,8 @@ class Checkpoint:
         to the human as "set by the app", so never fill it in from the model's output.
         """
         tool_name = tool if type(tool) is str else None
+        if self._trail is not None:
+            self._trail.asked(inputs)  # whatever comes of the call: a value the agent has used is no longer news from a later result
         try:
             found, record, level = self._decide(tool, inputs, actor)
         except (Refused, RecordError) as error:
@@ -168,11 +216,14 @@ class Checkpoint:
                     now = self._clock()
                     expires_at = now + self._hold_seconds
                     first_time = _first_time(found, record, tx.seen)
-                    preview = record.preview(summary, first_time)
+                    trail = self._trail.trace(found.watch, record.inputs(), now) if self._trail is not None else []
+                    preview = record.preview(summary, first_time, trail)
                     tx.insert_request(request_id, record.fingerprint, record.canonical, now, expires_at)
                     detail = {"expires_at": expires_at, "rules": self._rules.digest()}
                     if found.watch:
                         detail["first_time"] = sorted(first_time)
+                    if trail:
+                        detail["trail"] = trail
                     tx.log(now, "held", request_id, record.tool, record.fingerprint, detail)
                 return Decision(
                     HELD,
@@ -183,6 +234,7 @@ class Checkpoint:
                     preview=preview,
                     expires_at=expires_at,
                     first_time=tuple(sorted(first_time)),
+                    trail=tuple(trail),
                 )
         except Exception as error:
             return self._broken(error, tool_name)
@@ -308,17 +360,38 @@ class Checkpoint:
             except (Refused, RecordError):
                 continue
             first_time = _first_time(found, record, self._store.seen)
+            summary = self._summary(found, record)
+            trail = self._held_trail(row["id"])
+            try:
+                preview = record.preview(summary, first_time, trail)
+            except RecordError:  # the stored trail was edited by hand; verify_log() reports it
+                trail, preview = [], record.preview(summary, first_time)
             waiting.append(
                 {
                     "request_id": row["id"],
                     "tool": record.tool,
                     "fingerprint": record.fingerprint,
-                    "preview": record.preview(self._summary(found, record), first_time),
+                    "preview": preview,
                     "expires_at": row["expires_at"],
                     "first_time": sorted(first_time),
+                    "watched": sorted(key for key in found.watch if key in record.inputs()),  # every watched input it has, new or not
+                    "trail": trail,
                 }
             )
         return waiting
+
+    def _held_trail(self, request_id: str) -> list:
+        """The trail the log holds for a held request: what was worked out when it was asked.
+
+        It is read from the log, not worked out again, so another process sharing
+        the file shows the human the same thing.
+        """
+        rows = self._store.read("SELECT detail FROM log WHERE request_id = ? AND event = 'held' ORDER BY seq LIMIT 1", (request_id,))
+        try:
+            trail = json.loads(rows[0]["detail"]).get("trail", []) if rows else []
+        except (ValueError, TypeError, AttributeError):
+            return []
+        return trail if type(trail) is list else []
 
     def status(self, request_id: str) -> Optional[dict]:
         rows = self._store.read("SELECT * FROM requests WHERE id = ?", (request_id,)) if type(request_id) is str else []
@@ -373,14 +446,14 @@ class Checkpoint:
         record = ActionRecord.make(tool, inputs, actor)
         level = self._rules.level_for(found, record.inputs())
         if level == NEVER:
-            raise Refused(f"{record.tool} is never allowed")
+            raise _never(found, record)
         self._rules.check_fits(found, record.inputs())
         return found, record, level
 
     def _recheck(self, record: ActionRecord) -> Tool:
         found = self._rules.find(record.tool)
         if self._rules.level_for(found, record.inputs()) == NEVER:
-            raise Refused(f"{record.tool} is never allowed")
+            raise _never(found, record)
         self._rules.check_fits(found, record.inputs())
         return found
 
@@ -417,9 +490,18 @@ class Checkpoint:
                 request_id=request_id,
                 fingerprint=record.fingerprint,
             )
+        if self._trail is not None:
+            self._remember(record, result)
         recorded = self._finish(request_id, record, "ran", None)
         reason = "Ran." if recorded else "Ran, but the checkpoint could not record it. It needs checking."
         return Decision(RAN, reason, tool=record.tool, request_id=request_id, fingerprint=record.fingerprint, result=result)
+
+    def _remember(self, record: ActionRecord, result: Any) -> None:
+        """Hand what a call returned to the trail. The call has happened, so nothing here may fail it."""
+        try:
+            self._trail.saw_result(record.tool, record.inputs(), result, self._clock())
+        except Exception:
+            self._trail.missed_one()
 
     def _finish(self, request_id: Optional[str], record: ActionRecord, state: str, note: Optional[str]) -> bool:
         try:
@@ -478,6 +560,13 @@ def _marks(record: ActionRecord) -> list[str]:
     for key, value in record.inputs().items():
         marks += [_mark(record.tool, key, item) for item in (value if type(value) is list else [value])]
     return marks
+
+
+def _never(found: Tool, record: ActionRecord) -> Refused:
+    """Why a call at the never level is refused. A tool whose level depends on its inputs is allowed with others, so it is not called never allowed."""
+    if callable(found.level):
+        return Refused(f"{record.tool} is not allowed with these inputs")
+    return Refused(f"{record.tool} is never allowed")
 
 
 def _first_time(found: Tool, record: ActionRecord, seen: Callable[[str], bool]) -> dict:

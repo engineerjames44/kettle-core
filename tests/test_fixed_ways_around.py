@@ -280,6 +280,40 @@ def test_a_tool_made_never_after_the_yes_does_not_run(cp, world, approved):
     assert world.ran == []
 
 
+def _not_to_example_com(inputs):
+    return NEVER if inputs["to"].endswith("@example.com") else NEEDS_YES
+
+
+def test_a_refusal_says_never_only_when_no_inputs_are_allowed(cp, world):
+    """A tool whose level depends on its inputs is allowed with other inputs, so its refusal does not call it never allowed."""
+    never = cp.request("wipe_account", {})
+    assert never.reason == "Refused: wipe_account is never allowed. Nothing was run."
+    cp.tool("send_email", world.send_email, level=_not_to_example_com, replace=True)
+    these = cp.request("send_email", dict(EMAIL))
+    assert these.status == "refused" and these.request_id is None
+    assert these.reason == "Refused: send_email is not allowed with these inputs. Nothing was run."
+    assert cp.request("send_email", {"to": "sam@example.org", "body": "See you at 3."}).status == "held"
+    assert [entry["detail"]["reason"] for entry in cp.log() if entry["event"] == "refused"] == [
+        "wipe_account is never allowed",
+        "send_email is not allowed with these inputs",
+    ]
+    assert world.ran == []
+
+
+def test_a_refusal_after_the_yes_says_the_same(cp, world, approved):
+    cp.tool("send_email", world.send_email, level=_not_to_example_com, replace=True)
+    late = cp.run(approved.request_id)
+    assert late.status == "refused"
+    assert late.reason == "Refused and cancelled: send_email is not allowed with these inputs. Nothing was run."
+    assert world.ran == []
+
+
+def test_a_tool_made_never_after_the_yes_is_called_never_allowed(cp, world, approved):
+    cp.tool("send_email", world.send_email, level=NEVER, replace=True)
+    assert cp.run(approved.request_id).reason == "Refused and cancelled: send_email is never allowed. Nothing was run."
+    assert world.ran == []
+
+
 # ---- trick: inputs that cannot be pinned down ----
 
 
