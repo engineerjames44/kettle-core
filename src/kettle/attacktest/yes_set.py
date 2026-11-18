@@ -137,7 +137,23 @@ def _on_phone(telegram: PretendTelegram, count: int = 1, besides: tuple = ()) ->
 
 
 def _buttons(message: dict) -> dict:
-    return {key["text"]: key["callback_data"] for row in message["reply_markup"]["inline_keyboard"] for key in row}
+    """The data on each button, by the word on it ("Approve" for the button that reads a tick and "Approve")."""
+    return {key["text"].split()[-1]: key["callback_data"] for row in message["reply_markup"]["inline_keyboard"] for key in row}
+
+
+def _boxed(message: dict) -> Optional[str]:
+    """The text in the message's one fixed-width box, or None if no other formatting keeps clear of it.
+
+    Telegram counts places in UTF-16 units, so the text is cut in those.
+    """
+    boxes = [entity for entity in message["entities"] if entity["type"] == "pre"]
+    if len(boxes) != 1:
+        return None
+    start, end = boxes[0]["offset"], boxes[0]["offset"] + boxes[0]["length"]
+    for entity in message["entities"]:
+        if entity is not boxes[0] and entity["offset"] < end and entity["offset"] + entity["length"] > start:
+            return None
+    return message["text"].encode("utf-16-le")[2 * start : 2 * end].decode("utf-16-le")
 
 
 def _said(telegram: PretendTelegram, press: str) -> Optional[str]:
@@ -336,9 +352,8 @@ def _a_value_holds_markup_for_the_phone_to_read() -> bool:
         held = checkpoint.request("send_email", {"to": THIEF, "body": body})
         (message,) = _on_phone(telegram)
         (call,) = telegram.made("sendMessage")
-        (entity,) = message["entities"]
-        shown = message["text"][entity["offset"] : entity["offset"] + entity["length"]]
-        return "parse_mode" not in call and entity["type"] == "pre" and shown == held.preview and shown.isascii()
+        shown = _boxed(message)
+        return "parse_mode" not in call and shown == held.preview and shown.isascii()
 
 
 def _someone_else_presses_approve() -> bool:

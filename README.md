@@ -376,8 +376,8 @@ What to know about these pieces:
 
 ### A yes from your phone
 
-*In this repository and not yet in a release. It has only been run against a pretend Telegram on our own
-machine. It has not been tried with the real Telegram.*
+*In this repository and not yet in a release. The tests run it against a pretend Telegram on our own
+machine. The real Telegram was tried by hand, once, on 2026-11-17: see "What to know" below.*
 
 A held action can be sent to you on Telegram, with an Approve and a Deny button under the preview:
 
@@ -394,6 +394,36 @@ call = through(cp.gate, approver.on_held)
 private chat with that bot. It needs no other package. `call` now waits for the phone. Approve runs the
 action once and gives the model its result. Deny runs nothing, and neither does no answer before the request
 expires.
+
+To find your `chat_id`, put the token in `KETTLE_TELEGRAM_TOKEN` and run:
+
+```
+python -m kettle.telegram
+```
+
+It shows a 6-digit code and waits for you to send that code to your bot. Then it prints the number of the
+private chat the code came from, and the line above with that number in it. Anyone who knows a bot's name
+can write to it, so the first chat to write is not taken as yours. Only a private chat that sends the code
+is. A code sent in a group finds nothing, and 5 wrong codes end the search. The command takes no arguments,
+so the token is never typed where the shell keeps a history, and the token is never printed.
+
+What the message looks like:
+
+- A bold headline, "Approval needed", with the tool's name under it.
+- If an input you watch holds a value that no approved action has run with before, a line that names the
+  input: "🆕 First time: to".
+- The preview, in a box of fixed-width text, exactly as the checkpoint holds it.
+- Under the box, in italic: "Approve runs exactly what is in the box, once. Deny runs nothing."
+- Two buttons, "✅ Approve" and "❌ Deny".
+
+Everything outside the box comes from your own rules: the name you gave the tool and the names of the
+inputs you watch. No value from the agent is put there. A name is shown only if it is 48 characters or
+fewer of letters, digits and `_ . : -`. If the tool's name is not, the headline has no name. If an input's
+name is not, or more than 3 inputs are new, the line gives a count. The box says all of it either way.
+
+To see on your own side when a question has gone out, pass `sent=print`. Each time Telegram has taken a
+held action, buttons and all, it is called with one line that names the tool and the start of the
+fingerprint, never a value. Telegram having the message does not mean the phone shows it yet.
 
 What counts as a yes:
 
@@ -413,13 +443,19 @@ What counts as a yes:
 
 What to know:
 
-- **The real Telegram has not been tried.** The approver is written from the Bot API documents and tested
-  against a stand-in on this machine that follows them. Whether the app shows the preview as fixed-width
-  text, as asked, is not checked.
+- **The real Telegram was tried by hand, on one day.** On 2026-11-17, with a new bot and an iPhone:
+  `python -m kettle.telegram` found the chat, one Deny ran nothing, one Approve ran the action once, and the
+  log checked out both times. The preview showed as fixed-width text. That trial used an earlier, plainer
+  message. The message as it is now was tried the same evening: the first one sent never showed on the
+  phone, with no fault printed and the cause not found; a second one arrived and Approve was pressed. What
+  the terminal printed after that press was not kept, so "Approve runs it once" with the new message rests
+  on the tests, not on that trial. Everything else is tested against a stand-in on this machine that follows
+  the Bot API documents.
 - **The preview leaves your machine.** It passes through Telegram to your phone, and anyone who can read
   that chat can read it.
-- **A narrow phone wraps the preview's 78-character lines.** A wrapped line can then begin with text from
-  inside a value, where the preview's own marks would be. Not measured, and not fixed.
+- **A narrow phone wraps the preview's 78-character lines.** On the iPhone in that trial, a line longer
+  than about 37 characters wrapped. A wrapped line can then begin with text from inside a value, where the
+  preview's own marks would be. Not fixed.
 - **The token is the key to your bot.** Your code reads it and hands it over. The approver never puts it in
   an error, in `repr()` or in anything it prints, and does not send it on if the address redirects. Give the
   bot no other job: two programs cannot listen on one bot.
@@ -597,7 +633,7 @@ paths that go through it.
   not in `needs_checking()`.
 
 Also not built: an approval screen to put in your own app (there is the question in the terminal described
-above and, not yet in a release, the Telegram approver, which has not been tried with the real Telegram),
+above and, not yet in a release, the Telegram approver, tried with the real Telegram once, by hand),
 limits over time (such as a daily spending cap), support for values that are not plain JSON (files are
 passed by name or by hash), a source trail that follows a value written in pieces, a held-back case set, and
 a comparison with the approval steps built into agent frameworks.
@@ -609,12 +645,12 @@ repository, which is ahead of release 0.1.0. Where a row was measured earlier, o
 
 | Check | Command | Result |
 | --- | --- | --- |
-| The tests | `.venv/bin/pytest` | 967 passed on Python 3.14.8, with both extras installed (`claude` and `openai`). Not measured again on other versions or with no extras. For 0.1.0, on 2026-11-15: 604 passed on 3.14.8 and 3.15.2; on 3.11.18, 603 passed and 1 was skipped (it needs 3.14); with neither extra, on 3.15.2, 598 passed and 6 were skipped. |
+| The tests | `.venv/bin/pytest` | 1059 passed on Python 3.14.8, with both extras installed (`claude` and `openai`). Not measured again on other versions or with no extras. For 0.1.0, on 2026-11-15: 604 passed on 3.14.8 and 3.15.2; on 3.11.18, 603 passed and 1 was skipped (it needs 3.14); with neither extra, on 3.15.2, 598 passed and 6 were skipped. |
 | The attack test's check of itself | `.venv/bin/python -m kettle.attacktest --self-check` | 8 of 8 checks held, on each of the two case sets (add `--cases fraud` for the second) |
 | Checkpoint and source trail broken on purpose | `.venv/bin/python checks/break_checkpoint.py` | 216 breaks tried, 216 caught by the tests |
 | Attack test broken on purpose | `.venv/bin/python checks/break_attacktest.py` | 107 breaks tried, 106 caught, 1 known and explained |
 | Adapters broken on purpose | `.venv/bin/python checks/break_adapters.py` | 43 breaks tried, 43 caught by the tests |
-| Telegram approver broken on purpose | `.venv/bin/python checks/break_telegram.py` | 122 breaks tried, 122 caught by the tests |
+| Telegram approver broken on purpose | `.venv/bin/python checks/break_telegram.py` | 197 breaks tried, 197 caught by the tests |
 | Attacks on the yes | `.venv/bin/python -m kettle.attacktest --yes-set` | 25 tried: 23 stopped, 2 got through, both known limits (named above) |
 | Attacks on the yes broken on purpose | `.venv/bin/python checks/break_yes_set.py` | 65 breaks tried, 65 caught by the tests |
 | Browser demo broken on purpose | `.venv/bin/python checks/break_demo.py` | 43 breaks tried, 43 caught by the tests |
@@ -623,16 +659,16 @@ repository, which is ahead of release 0.1.0. Where a row was measured earlier, o
 | Previews read back | `.venv/bin/python checks/read_back.py` | 150,000 random records, 0 read back wrongly, no two different records sharing a preview |
 | The built package (0.1.0 only) | see [RELEASING.md](https://github.com/engineerjames44/kettle-core/blob/main/RELEASING.md) | Measured for 0.1.0, and not again with the newer code in it: the wheel and the source archive build, and the wheel installed by itself on Python 3.11.18 passes the self-check on both case sets. On 2026-11-16, `pip install kettle-labs` from PyPI into an empty environment on Python 3.14.8 passed the same two self-checks |
 
-- **The tests.** 380 are for the checkpoint, 301 for the attack test, 64 for the adapters, 114 for the
+- **The tests.** 380 are for the checkpoint, 301 for the attack test, 64 for the adapters, 205 for the
   Telegram approver, 39 for the attacks on the yes, 25 for the browser demo and 30 for the receipts. 8 run
-  the examples and 6 check that the tests stay on this machine. Of the checkpoint's, the 102 in
+  the examples and 7 check that the tests stay on this machine. Of the checkpoint's, the 102 in
   `tests/test_fixed_ways_around.py` are the ones that try a way around it (a changed action, a reused or
   expired yes, a broken store, and so on), the 44 in `tests/test_first_time.py` are for the first-time
   mark and the 148 in `tests/test_trail.py` are for the source trail. Most of them pass or fail on what the
   tools themselves wrote down as run, not on what the checkpoint says. The rest are ordinary tests of the
   record, the preview, the log and shared stores.
-- **The Telegram tests use a pretend Telegram on this machine.** No test can reach the real one, and the
-  real one has not been tried.
+- **The Telegram tests use a pretend Telegram on this machine.** No test can reach the real one. The real
+  one was tried by hand, once, on 2026-11-17: see "A yes from your phone" above.
 - **The 6 tests skipped without the extras** run the built-in agents with the real `anthropic` and `openai`
   packages against a stand-in server on this machine. They never call a paid API. The OpenAI agent and the
   OpenAI adapter tests also pass with `openai` 2.0.0, the oldest version the extra allows.
@@ -643,8 +679,7 @@ repository, which is ahead of release 0.1.0. Where a row was measured earlier, o
   twice", and the tests are run against the copy. A break the tests do not notice is a hole in the tests. The
   one break that is not caught removes the second of two checks the stand-in owner makes on an action; the
   first still refuses, so nothing changes that a test could see.
-- **Not tried at all:** the OpenAI agent against OpenAI's real API, the Telegram approver against the
-  real Telegram, a built package with the newer code in it, and the question in the terminal on Windows or
-  Linux.
+- **Not tried at all:** the OpenAI agent against OpenAI's real API, a built package with the newer code in
+  it, and the question in the terminal on Windows or Linux.
 - These checks show the code does what its tests say. They were written alongside the code, and nobody
   independent has reviewed it.

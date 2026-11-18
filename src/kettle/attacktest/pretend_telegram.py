@@ -1,7 +1,7 @@
 """A pretend Telegram that runs on this machine only, for the tests and for --yes-set.
 
 It speaks the four Bot API methods the approver uses (sendMessage, getUpdates,
-answerCallbackQuery, editMessageReplyMarkup) and keeps to the limits the real one
+answerCallbackQuery, editMessageReplyMarkup), and getMe, and keeps to the limits the real one
 documents: 4096 characters in a message and 64 bytes in a button's data.
 
 It is not Telegram. It shows that the approver does what it should with the
@@ -28,6 +28,7 @@ TOKEN = "1234567890:pretend-token-made-up-for-the-tests"  # the shape of a bot t
 class PretendTelegram:
     def __init__(self, token: str = TOKEN) -> None:
         self.token = token
+        self.username = "kettle_pretend_bot"
         self.messages: list[dict] = []  # every message sent, as {"message_id", "chat_id", "text", "entities", "reply_markup"}
         self.answers: list[dict] = []  # every answer to a button press
         self.calls: list[tuple] = []  # (method, body) of every call that named the right token
@@ -120,7 +121,7 @@ class PretendTelegram:
             owner = sent["chat_id"] if sent else 0
             if data is None:
                 rows = ((sent or {}).get("reply_markup") or {}).get("inline_keyboard") or []
-                found = [key["callback_data"] for row in rows for key in row if key["text"] == button]
+                found = [key["callback_data"] for row in rows for key in row if button in (key["text"], key["text"].split()[-1])]  # "Approve" finds a button that reads "(tick) Approve"
                 if not found:
                     raise LookupError(f"message {message_id} has no {button} button")
                 data = found[0]
@@ -239,7 +240,8 @@ class PretendTelegram:
             return 400, "Bad Request: chat not found"
         if type(text) is not str or not text:
             return 400, "Bad Request: message text is empty"
-        if len(text.encode("utf-16-le")) // 2 > MESSAGE_LIMIT:
+        units = len(text.encode("utf-16-le")) // 2  # Telegram counts in UTF-16 units, so the NEW sign counts as two
+        if units > MESSAGE_LIMIT:
             return 400, "Bad Request: message is too long"
         if "parse_mode" in body:
             return 400, "Bad Request: the pretend Telegram takes no parse_mode, so no text can be read as markup"
@@ -247,7 +249,7 @@ class PretendTelegram:
         for entity in entities:
             if type(entity) is not dict or type(entity.get("offset")) is not int or type(entity.get("length")) is not int:
                 return 400, "Bad Request: can't parse entities"
-            if entity["offset"] < 0 or entity["length"] <= 0 or entity["offset"] + entity["length"] > len(text):
+            if entity["offset"] < 0 or entity["length"] <= 0 or entity["offset"] + entity["length"] > units:
                 return 400, "Bad Request: an entity is outside the text"
         markup = body.get("reply_markup")
         problem = _markup_problem(markup)
@@ -276,6 +278,9 @@ class PretendTelegram:
         with self._changed:
             self.answers.append(body)
         return 200, True
+
+    def _getMe(self, body: dict) -> tuple[int, Any]:
+        return 200, {"id": int(self.token.split(":")[0]), "is_bot": True, "first_name": "Pretend", "username": self.username}
 
     def _getUpdates(self, body: dict) -> tuple[int, Any]:
         offset = body.get("offset") if type(body.get("offset")) is int else 0

@@ -3,7 +3,11 @@
 As everywhere, a test passes or fails on what the World saw, not on what anyone says happened.
 """
 
+import os
+import re
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -14,7 +18,32 @@ from kettle import NEEDS_YES
 from kettle.adapters import SAID_NO, through
 from kettle.attacktest.pretend_telegram import DATA_LIMIT, MESSAGE_LIMIT, PretendTelegram
 from kettle.checkpoint.record import ActionRecord
-from kettle.telegram import FIRST_LINE, HOW_TO, NO_ANSWER, NOT_HERE, NOT_OPEN, NOT_YOURS, TOO_SOON, TelegramApprover, TelegramError, _parts
+import kettle
+from kettle.telegram import (
+    APPROVE,
+    CODE_DIGITS,
+    DENY,
+    FIRST_LINE,
+    FIRST_TIME,
+    FOUND_NOTE,
+    HOW_TO,
+    HOW_TO_PARTS,
+    NO_ANSWER,
+    NO_TOKEN,
+    NOT_HERE,
+    NOT_OPEN,
+    NOT_YOURS,
+    SENT_NOTE,
+    TOKEN_NAME,
+    TOO_SOON,
+    USAGE,
+    WRONG_CODES,
+    TelegramApprover,
+    TelegramError,
+    _parts,
+    find_chat_id,
+    main,
+)
 
 from conftest import EMAIL
 
@@ -78,12 +107,20 @@ def on_screen(telegram, count=1):
 
 
 def buttons(message):
-    return {key["text"]: key["callback_data"] for row in message["reply_markup"]["inline_keyboard"] for key in row}
+    """The data on each button, by the word on it ("Approve" for the button that reads a tick and "Approve")."""
+    return {key["text"].split()[-1]: key["callback_data"] for row in message["reply_markup"]["inline_keyboard"] for key in row}
+
+
+def marked(message, kind):
+    """The pieces of the text marked as bold, italic or pre. Telegram counts places in UTF-16 units."""
+    text, entities = (message["text"], message["entities"]) if type(message) is dict else message
+    raw = text.encode("utf-16-le")
+    return [raw[2 * entity["offset"] : 2 * (entity["offset"] + entity["length"])].decode("utf-16-le") for entity in entities if entity["type"] == kind]
 
 
 def shown_preview(message):
-    (entity,) = message["entities"]
-    return message["text"][entity["offset"] : entity["offset"] + entity["length"]]
+    (box,) = marked(message, "pre")
+    return box
 
 
 def state(cp, request_id):
@@ -103,12 +140,86 @@ def test_the_message_holds_the_preview_exactly_as_the_checkpoint_made_it(cp, hel
     (message,) = on_screen(telegram)
     assert message["chat_id"] == OWNER
     assert shown_preview(message) == held.preview
-    assert message["entities"] == [{"type": "pre", "offset": message["text"].index(held.preview), "length": len(held.preview)}]
-    assert message["text"].startswith(FIRST_LINE) and message["text"].endswith(HOW_TO)
+    assert message["text"] == f"{FIRST_LINE}\nsend_email\n\n{held.preview}\n\n{HOW_TO}"
+    assert message["entities"] == [
+        {"type": "bold", "offset": 0, "length": len(FIRST_LINE + "\nsend_email")},
+        {"type": "pre", "offset": message["text"].index(held.preview), "length": len(held.preview)},
+        {"type": "italic", "offset": message["text"].index(HOW_TO), "length": len(HOW_TO)},
+    ]
     assert list(buttons(message)) == ["Approve", "Deny"]
+    assert [key["text"] for key in message["reply_markup"]["inline_keyboard"][0]] == [APPROVE, DENY] == ["\u2705 Approve", "\u274c Deny"]
     (call,) = telegram.made("sendMessage")
     assert "parse_mode" not in call  # nothing in a value can be read as markup
     assert call["link_preview_options"] == {"is_disabled": True}
+
+
+def test_the_headline_is_bold_and_the_line_on_what_approve_does_is_italic(cp, held, telegram, phone):
+    phone()
+    (message,) = on_screen(telegram)
+    assert marked(message, "bold") == ["Approval needed\nsend_email"]
+    assert marked(message, "italic") == ["Approve runs exactly what is in the box, once. Deny runs nothing."]
+    assert FIRST_TIME not in message["text"]  # send_email has no watched input here
+
+
+def test_an_input_marked_first_time_is_named_above_the_box(cp, world, telegram, phone):
+    cp.tool("wire", world.pay, level=NEEDS_YES, watch=["to"])
+    decision = cp.request("wire", {"to": "ACME-9", "amount": 5})
+    assert "first time" in decision.preview
+    phone()
+    (message,) = on_screen(telegram)
+    assert FIRST_TIME == "\U0001f195 First time: "
+    assert message["text"] == f"{FIRST_LINE}\nwire\n{FIRST_TIME}to\n\n{decision.preview}\n\n{HOW_TO}"
+    # The NEW sign counts as two places, and everything after it is still marked in the right place.
+    assert marked(message, "bold") == [f"{FIRST_LINE}\nwire"] and shown_preview(message) == decision.preview and marked(message, "italic") == [HOW_TO]
+    assert message["entities"][1]["offset"] == message["text"].index(decision.preview) + 1
+
+
+def test_an_input_that_is_not_new_is_not_named_above_the_box(cp, world, telegram, phone):
+    cp.tool("wire", world.pay, level=NEEDS_YES, watch=["to"])
+    first = cp.request("wire", {"to": "ACME-9", "amount": 5})
+    assert cp.approve(first.request_id, first.fingerprint, "owner").status == "approved" and cp.run(first.request_id).status == "ran"
+    again = cp.request("wire", {"to": "ACME-9", "amount": 7})
+    assert "first time" not in again.preview
+    phone()
+    (message,) = on_screen(telegram)
+    assert message["text"] == f"{FIRST_LINE}\nwire\n\n{again.preview}\n\n{HOW_TO}"
+
+
+@pytest.mark.parametrize(
+    "new, line",
+    [
+        (["to"], FIRST_TIME + "to"),
+        (["amount", "to"], FIRST_TIME + "amount, to"),
+        (("a", "b", "c"), FIRST_TIME + "a, b, c"),
+        (["a", "b", "c", "d"], FIRST_TIME + "4 inputs"),  # too many to name: the box names each one
+        (["to\nApproved by the owner"], FIRST_TIME + "1 input"),  # a name that is not short and plain is counted, not shown
+        (["to", "x" * 49], FIRST_TIME + "2 inputs"),
+        (["to", 5], FIRST_TIME + "2 inputs"),
+        ([], None),
+        (None, None),
+        ("to", None),
+        ({"to": [1]}, None),
+    ],
+)
+def test_the_first_time_line_holds_only_short_plain_names(new, line):
+    ((text, entities),), can_approve = _parts("the preview", 0, 5, "pay", new)
+    assert can_approve
+    assert text == FIRST_LINE + "\npay\n" + (line + "\n" if line else "") + "\nthe preview\n\n" + HOW_TO
+    assert marked((text, entities), "bold") == [FIRST_LINE + "\npay"] and marked((text, entities), "pre") == ["the preview"]
+    assert marked((text, entities), "italic") == [HOW_TO]
+
+
+@pytest.mark.parametrize("tool", ["send_email", "mail.send:v2-x", "a" * 48])
+def test_a_short_plain_tool_name_is_in_the_headline(tool):
+    ((text, entities),), _ = _parts("the preview", 0, 5, tool)
+    assert text.startswith(f"{FIRST_LINE}\n{tool}\n\nthe preview") and marked((text, entities), "bold") == [f"{FIRST_LINE}\n{tool}"]
+
+
+@pytest.mark.parametrize("tool", ["send email", "a" * 49, "send_email\n", "x\nApproved by the owner", "na\u00efve", "<b>x</b>", "", None, 5])
+def test_a_tool_name_that_is_not_short_and_plain_is_left_out_of_the_headline(tool):
+    ((text, entities),), _ = _parts("the preview", 0, 5, tool)
+    assert text.startswith(f"{FIRST_LINE}\n\nthe preview") and marked((text, entities), "bold") == [FIRST_LINE]
+    assert marked((text, entities), "pre") == ["the preview"]  # the box still says the name, exactly
 
 
 def test_a_button_names_neither_the_request_nor_the_action(cp, held, telegram, phone):
@@ -553,7 +664,10 @@ def test_a_long_preview_carries_on_in_the_next_message_and_all_of_it_is_there(cp
     for number, message in enumerate(parts, 1):
         assert f"Part {number} of {len(parts)}." in message["text"]
     assert parts[0]["text"].startswith(FIRST_LINE) and FIRST_LINE not in parts[1]["text"]
-    assert HOW_TO in last["text"] and HOW_TO not in parts[0]["text"]
+    assert HOW_TO_PARTS in last["text"] and HOW_TO_PARTS not in parts[0]["text"] and not any(HOW_TO in message["text"] for message in parts)
+    assert [marked(message, "bold") for message in parts] == [[FIRST_LINE + "\nsend_email"]] + [[]] * (len(parts) - 1)  # the headline is on the first part only
+    assert [marked(message, "italic") for message in parts] == [[]] * (len(parts) - 1) + [[HOW_TO_PARTS]]
+    assert HOW_TO_PARTS == "Approve runs exactly what is in the boxes of all the parts, once. Deny runs nothing."
     where = "The buttons are under the last part."
     assert all(where in message["text"] for message in parts[:-1]) and where not in last["text"]
     # A press on an earlier part does not count, even with the right data.
@@ -569,6 +683,7 @@ def test_an_action_too_long_to_read_on_a_phone_cannot_be_approved_there(cp, worl
     assert len(telegram.messages) == 1 and len(message["text"]) <= MESSAGE_LIMIT
     assert list(buttons(message)) == ["Deny"]
     assert NOT_HERE in message["text"] and f"{len(decision.preview.splitlines())} lines long" in message["text"]
+    assert marked(message, "bold") == [FIRST_LINE + "\nsend_email"] and marked(message, "italic") == [] and HOW_TO not in message["text"]
     assert decision.preview.startswith(shown_preview(message))
     forged = "a:" + buttons(message)["Deny"][2:]
     answer = telegram.answer_to(telegram.press(message["message_id"], data=forged))
@@ -594,6 +709,88 @@ def test_look_alike_letters_reach_the_phone_as_codes_with_the_warning(cp, world,
     assert shown_preview(message) == decision.preview
     assert "а" not in message["text"] and "\\u{0430}" in message["text"]
     assert all(32 <= ord(letter) < 127 or letter == "\n" for letter in message["text"])
+
+
+# ---- saying that Telegram has it ---------------------------------------------------
+
+
+def test_the_owner_side_is_told_once_when_telegram_has_the_question(cp, held, world, telegram, phone):
+    lines = []
+    phone(sent=lines.append)
+    on_screen(telegram)
+    assert until(lambda: lines)
+    time.sleep(0.2)
+    assert lines == [f"kettle.telegram: send_email is with Telegram, on its way to your phone (fingerprint {held.fingerprint[:12]}...). Waiting for your answer."]
+    assert lines == [SENT_NOTE.format(tool="send_email", start=held.fingerprint[:12])]
+    assert held.fingerprint[:13] not in lines[0] and EMAIL["to"] not in lines[0] and EMAIL["body"] not in lines[0] and telegram.token not in lines[0]
+    assert state(cp, held.request_id) == "held" and world.risky() == []  # being told is not an answer
+
+
+def test_nothing_is_said_while_telegram_has_not_taken_the_question(cp, held, telegram, phone):
+    lines = []
+    telegram.fail(4, "sendMessage")
+    phone(sent=lines.append)
+    assert until(lambda: len(telegram.made("sendMessage")) >= 3)
+    assert lines == [] and telegram.with_buttons() == []
+    on_screen(telegram)
+    assert until(lambda: len(lines) == 1)
+
+
+def test_a_long_action_is_said_to_be_sent_only_when_its_last_part_is(cp, telegram, phone):
+    decision = cp.request("send_email", dict(LONG))
+    parts = parts_needed(decision)
+    assert parts >= 3
+    lines = []
+    telegram.fail(3, "sendMessage", after=parts - 1)
+    phone(sent=lines.append)
+    assert until(lambda: len(telegram.made("sendMessage")) >= parts + 1)  # every part but the last is out, and the last was refused
+    assert len(telegram.messages) == parts - 1 and lines == []
+    on_screen(telegram)
+    assert until(lambda: lines)
+    time.sleep(0.2)
+    assert lines == [SENT_NOTE.format(tool="send_email", start=decision.fingerprint[:12])]
+
+
+def test_each_held_action_is_said_to_be_sent(cp, held, telegram, phone):
+    other = cp.request("send_email", {"to": "kim@example.com", "body": "And you."})
+    lines = []
+    phone(sent=lines.append)
+    on_screen(telegram, 2)
+    assert until(lambda: len(lines) == 2)
+    assert sorted(lines) == sorted(SENT_NOTE.format(tool="send_email", start=found.fingerprint[:12]) for found in (held, other))
+
+
+def test_a_tool_name_that_is_not_short_and_plain_is_not_in_the_line_that_says_sent(cp, world, telegram, phone):
+    cp.tool("wire \x1b[2J now", world.pay, level=NEEDS_YES)
+    decision = cp.request("wire \x1b[2J now", {"to": "IE00 1234", "amount": 5})
+    assert decision.status == "held"
+    lines = []
+    phone(sent=lines.append)
+    on_screen(telegram)
+    assert until(lambda: lines)
+    assert lines == [SENT_NOTE.format(tool="an action", start=decision.fingerprint[:12])] and "\x1b" not in lines[0]
+
+
+def test_a_sent_report_that_itself_fails_does_not_stop_the_approver(cp, held, world, telegram, phone):
+    def broken(line):
+        raise RuntimeError("the reporter is broken")
+
+    approver = phone(sent=broken)
+    (message,) = on_screen(telegram)
+    settled(telegram, message["message_id"])
+    time.sleep(0.1)
+    assert approver.problems == [] and approver.last_error is None
+    assert telegram.answer_to(telegram.press(message["message_id"], "Deny"))["text"].startswith("Denied")
+    assert state(cp, held.request_id) == "denied" and world.risky() == []
+
+
+def test_with_no_sent_given_nothing_is_printed(cp, held, telegram, phone, capsys):
+    phone()
+    (message,) = on_screen(telegram)
+    settled(telegram, message["message_id"])
+    time.sleep(0.1)
+    printed = capsys.readouterr()
+    assert printed.out == "" and printed.err == ""
 
 
 # ---- when Telegram cannot be reached -----------------------------------------------
@@ -878,6 +1075,11 @@ def test_the_pretend_telegram_refuses_what_the_real_one_documents_as_too_long(te
     assert telegram._sendMessage({"chat_id": OWNER, "text": ""})[0] == 400
     assert telegram._sendMessage({"chat_id": OWNER, "text": "x", "parse_mode": "HTML"})[0] == 400
     assert telegram._sendMessage({"chat_id": OWNER, "text": "x", "entities": [{"type": "pre", "offset": 0, "length": 2}]})[0] == 400
+    new_sign = "\U0001f195x"  # three places as Telegram counts them: the sign is two
+    assert telegram._sendMessage({"chat_id": OWNER, "text": new_sign, "entities": [{"type": "bold", "offset": 2, "length": 1}]})[0] == 200
+    assert telegram._sendMessage({"chat_id": OWNER, "text": new_sign, "entities": [{"type": "bold", "offset": 2, "length": 2}]})[0] == 400
+    assert telegram._sendMessage({"chat_id": OWNER, "text": "\U0001f195" * (MESSAGE_LIMIT // 2)})[0] == 200
+    assert telegram._sendMessage({"chat_id": OWNER, "text": "\U0001f195" * (MESSAGE_LIMIT // 2) + "x"})[0] == 400
 
     def keyboard(data):
         return {"inline_keyboard": [[{"text": "Approve", "callback_data": data}]]}
@@ -885,3 +1087,336 @@ def test_the_pretend_telegram_refuses_what_the_real_one_documents_as_too_long(te
     assert telegram._sendMessage({"chat_id": OWNER, "text": "x", "reply_markup": keyboard("a" * DATA_LIMIT)})[0] == 200
     assert telegram._sendMessage({"chat_id": OWNER, "text": "x", "reply_markup": keyboard("a" * (DATA_LIMIT + 1))})[0] == 400
     assert telegram._sendMessage({"chat_id": OWNER, "text": "x", "reply_markup": keyboard("")})[0] == 400
+
+
+# ---- finding your chat id: python -m kettle.telegram --------------------------------
+
+
+class Screen:
+    """What the command shows, and the person reading it: when the code comes up, `then` is called with it."""
+
+    def __init__(self, then=None):
+        self.lines, self.then, self.code = [], then, None
+
+    def __call__(self, line=""):
+        self.lines.append(line)
+        found = re.search(r"send it this code: (.+)$", line)
+        if found:
+            self.code = found.group(1)
+            if self.then:
+                self.then(self.code)
+
+    @property
+    def text(self):
+        return "\n".join(self.lines)
+
+
+class Steps:
+    """A clock that moves on one second each time it is read, so a wait ends without any real waiting."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        self.now += 1.0
+        return self.now
+
+
+def other_code(code, step=1):
+    return f"{(int(code) + step) % 10**CODE_DIGITS:0{CODE_DIGITS}d}"
+
+
+def find(telegram, screen, **settings):
+    wanted = dict(api=telegram.api, say=screen, wait_seconds=30, long_poll_seconds=0, clock=Steps())
+    wanted.update(settings)
+    return find_chat_id(telegram.token, **wanted)
+
+
+def test_the_code_sent_in_your_own_chat_finds_it(telegram):
+    screen = Screen(lambda code: telegram.say(code, from_id=OWNER))
+    assert find(telegram, screen) == OWNER
+    assert re.fullmatch(r"[0-9]{6}", screen.code)
+    assert screen.lines[0] == "This token belongs to the bot @kettle_pretend_bot."
+    assert screen.lines[1] == f"Open your chat with @kettle_pretend_bot in Telegram and send it this code: {screen.code}"
+    assert telegram.token not in screen.text
+
+
+def test_each_search_shows_a_new_code(telegram):
+    codes = set()
+    for _ in range(6):
+        screen = Screen(lambda code: telegram.say(code, from_id=OWNER))
+        find(telegram, screen)
+        codes.add(screen.code)
+    assert len(codes) > 1
+
+
+def test_the_first_chat_to_write_is_not_taken_as_yours(telegram):
+    def then(code):
+        telegram.say("/start", from_id=SOMEONE_ELSE)
+        for _ in range(WRONG_CODES + 1):  # ordinary messages are not wrong codes, however many there are
+            telegram.say("hello, is this my bot?", from_id=SOMEONE_ELSE)
+        telegram.say(code, from_id=OWNER)
+
+    assert find(telegram, Screen(then)) == OWNER
+
+
+def test_a_chat_that_never_sends_the_code_is_never_found(telegram):
+    def then(code):
+        telegram.say("/start", from_id=SOMEONE_ELSE)
+        telegram.say(f"the code is {code}", from_id=SOMEONE_ELSE)
+        telegram.say(code[:-1], from_id=SOMEONE_ELSE)
+        telegram.say(code + "0", from_id=SOMEONE_ELSE)
+
+    with pytest.raises(TelegramError, match="no message with the code came in time"):
+        find(telegram, Screen(then))
+    assert telegram.messages == []
+
+
+def test_spaces_around_the_code_do_not_matter(telegram):
+    assert find(telegram, Screen(lambda code: telegram.say(f"  {code} \n", from_id=OWNER))) == OWNER
+
+
+def test_what_was_sent_before_the_code_was_shown_is_passed_over(telegram):
+    for step in range(WRONG_CODES + 3):
+        telegram.say(f"{step:0{CODE_DIGITS}d}", from_id=SOMEONE_ELSE)
+    waiting_before = len(telegram._updates)
+
+    def then(code):
+        for step in range(1, WRONG_CODES):  # one short of too many: not one of the old messages may be counted
+            telegram.say(other_code(code, step), from_id=SOMEONE_ELSE)
+        telegram.say(code, from_id=OWNER)
+
+    assert find(telegram, Screen(then)) == OWNER
+    assert waiting_before == WRONG_CODES + 3 and telegram._updates == []
+
+
+def test_a_few_wrong_codes_from_someone_else_do_not_stop_you(telegram):
+    def then(code):
+        for step in range(1, WRONG_CODES):
+            telegram.say(other_code(code, step), from_id=SOMEONE_ELSE)
+        telegram.say(code, from_id=OWNER)
+
+    assert find(telegram, Screen(then)) == OWNER
+
+
+def test_too_many_wrong_codes_stop_the_search(telegram):
+    """Nobody gets to keep guessing: after five wrong codes even the right one is not taken."""
+
+    def then(code):
+        for step in range(1, WRONG_CODES + 1):
+            telegram.say(other_code(code, step), from_id=SOMEONE_ELSE)
+        telegram.say(code, from_id=SOMEONE_ELSE)
+
+    with pytest.raises(TelegramError, match="5 wrong codes were sent"):
+        find(telegram, Screen(then))
+    assert telegram.messages == []
+
+
+def test_a_code_sent_in_a_group_is_no_longer_good(telegram):
+    def then(code):
+        telegram.say(code, from_id=OWNER, chat_id=-1001234567890)
+        telegram.say(code, from_id=OWNER)
+
+    with pytest.raises(TelegramError, match="sent in a group"):
+        find(telegram, Screen(then))
+    assert telegram.messages == []
+
+
+@pytest.mark.parametrize(
+    "sender, chat",
+    [
+        ({"id": SOMEONE_ELSE}, {"id": OWNER, "type": "private"}),
+        ({"id": OWNER}, {"id": OWNER, "type": "group"}),
+        ({"id": OWNER}, {"id": OWNER, "type": "supergroup"}),
+        ({"id": OWNER}, {"id": OWNER}),
+        ({"id": -5}, {"id": -5, "type": "private"}),
+        ({"id": 0}, {"id": 0, "type": "private"}),
+        ({"id": str(OWNER)}, {"id": str(OWNER), "type": "private"}),
+        ({"id": True}, {"id": True, "type": "private"}),
+        ({"id": float(OWNER)}, {"id": float(OWNER), "type": "private"}),
+        (None, {"id": OWNER, "type": "private"}),
+        ({"id": OWNER}, None),
+        ("someone", "somewhere"),
+    ],
+)
+def test_the_right_code_from_anywhere_but_a_private_chat_of_its_sender_finds_nothing(telegram, sender, chat):
+    def then(code):
+        message = {"message_id": 1, "date": 0, "text": code}
+        message.update({key: value for key, value in (("from", sender), ("chat", chat)) if value is not None})
+        telegram.hand_over({"message": message})
+
+    with pytest.raises(TelegramError, match="sent in a group"):
+        find(telegram, Screen(then))
+    assert telegram.messages == []
+
+
+def test_updates_of_any_other_shape_are_passed_over(telegram):
+    def then(code):
+        telegram.hand_over({"message": "not a message"})
+        telegram.hand_over({"message": {"text": int(code)}})
+        telegram.hand_over({"message": {"text": None, "from": {"id": OWNER}, "chat": {"id": OWNER, "type": "private"}}})
+        telegram.hand_over({"edited_message": {"text": code, "from": {"id": SOMEONE_ELSE}, "chat": {"id": SOMEONE_ELSE, "type": "private"}}})
+        telegram.hand_over({"callback_query": {"id": "1", "from": {"id": SOMEONE_ELSE}, "data": code}})
+        telegram.hand_over({})
+        telegram.say(code, from_id=OWNER)
+
+    assert find(telegram, Screen(then)) == OWNER
+
+
+def test_only_typed_messages_are_asked_for_and_the_code_is_not_left_waiting(telegram):
+    """The approver asks Telegram for button presses only. This asks for messages only, every time, and says so each time."""
+    screen = Screen(lambda code: telegram.say(code, from_id=OWNER))
+    assert find(telegram, screen) == OWNER
+    asked = telegram.made("getUpdates")
+    assert len(asked) >= 3 and all(body["allowed_updates"] == ["message"] for body in asked)
+    assert asked[-1]["offset"] == telegram._ids["update"] + 1 and asked[-1]["timeout"] == 0
+    assert telegram._updates == []
+
+
+def test_the_chat_is_told_it_was_found(telegram):
+    assert find(telegram, Screen(lambda code: telegram.say(code, from_id=OWNER))) == OWNER
+    (message,) = telegram.messages
+    assert (message["chat_id"], message["text"], message["reply_markup"]) == (OWNER, FOUND_NOTE, None)
+
+
+def test_a_fault_after_the_chat_is_found_changes_nothing(telegram):
+    def then(code):
+        telegram.say(code, from_id=OWNER)
+        telegram.fail(times=5, method="getUpdates", after=1)  # the call that reads the code goes through; the one after it does not
+        telegram.fail(times=5, method="sendMessage")
+
+    assert find(telegram, Screen(then)) == OWNER
+    assert telegram.messages == []
+
+
+def test_nothing_is_shown_for_a_token_telegram_does_not_know(telegram):
+    screen = Screen()
+    other = "1234567890:another-token-of-the-right-shape"
+    with pytest.raises(TelegramError, match=r"Telegram refused getMe \(401: Unauthorized\)") as caught:
+        find_chat_id(other, api=telegram.api, say=screen)
+    assert screen.lines == [] and other not in str(caught.value) and telegram.calls == []
+
+
+@pytest.mark.parametrize("token", ["", "not a token", "1234567890", None, 1234567890])
+def test_a_token_of_the_wrong_shape_is_not_sent_and_not_repeated(telegram, token):
+    screen = Screen()
+    with pytest.raises(TelegramError, match="not the shape of a bot token") as caught:
+        find_chat_id(token, api=telegram.api, say=screen)
+    assert screen.lines == [] and telegram.calls == [] and telegram.wrong_token == 0
+    assert not token or str(token) not in str(caught.value)
+
+
+@pytest.mark.parametrize("username", [None, "", "two words", "line\nbreak", "x" * 65, 12345])
+def test_a_bot_name_that_is_not_a_bot_name_is_not_shown(telegram, username):
+    telegram.username = username
+    screen = Screen()
+    with pytest.raises(TelegramError, match="did not say which bot"):
+        find(telegram, screen)
+    assert screen.lines == []
+
+
+def test_a_fault_while_waiting_ends_the_search_with_telegrams_reason(telegram):
+    said = "Conflict: terminated by other getUpdates request; make sure that only one bot instance is running"
+    screen = Screen(lambda code: telegram.fail(method="getUpdates", code=409, said=said))
+    with pytest.raises(TelegramError, match="409: Conflict") as caught:
+        find(telegram, screen)
+    assert telegram.token not in str(caught.value)
+
+
+def test_the_search_ends_at_the_time_limit(telegram):
+    clock = Steps()
+    screen = Screen()
+    with pytest.raises(TelegramError, match="no message with the code came in time"):
+        find(telegram, screen, wait_seconds=4, clock=clock)
+    assert clock.now == 5.0  # read once to set the limit, then once a round until the 4 seconds are gone
+    assert screen.lines[2] == "Waiting up to 4 seconds. Only that code, sent in a private chat, counts."
+    telegram.say(screen.code, from_id=OWNER)  # too late: nothing is listening any more
+    assert telegram.messages == []
+
+
+def test_a_wait_on_telegram_does_not_run_far_past_the_time_limit(telegram):
+    started = time.monotonic()
+    with pytest.raises(TelegramError, match="in time"):
+        find_chat_id(telegram.token, api=telegram.api, say=Screen(), wait_seconds=1.5, long_poll_seconds=8)
+    assert 1.4 < time.monotonic() - started < 5
+    assert [body["timeout"] for body in telegram.made("getUpdates")] == [0, 1, 1]
+
+
+@pytest.mark.parametrize("wait_seconds", [0, -1, True, "120", None])
+def test_a_time_limit_that_makes_no_sense_is_refused(telegram, wait_seconds):
+    with pytest.raises(TelegramError, match="wait_seconds"):
+        find_chat_id(telegram.token, api=telegram.api, say=Screen(), wait_seconds=wait_seconds)
+    assert telegram.calls == []
+
+
+def test_the_search_goes_only_where_the_approver_would(telegram):
+    with pytest.raises(TelegramError, match="api must"):
+        find_chat_id(telegram.token, api="http://example.com", say=Screen())
+
+
+def test_the_command_prints_the_chat_id_and_the_next_step(telegram):
+    screen = Screen(lambda code: telegram.say(code, from_id=OWNER))
+    assert main([], environ={TOKEN_NAME: f"  {telegram.token}\n"}, api=telegram.api, say=screen, wait_seconds=30) == 0
+    assert screen.lines[3:] == [
+        "",
+        "Your chat id is 424242",
+        "",
+        "Next step: give that number to the approver in your agent's code.",
+        "",
+        '    approver = TelegramApprover(cp, token=os.environ["KETTLE_TELEGRAM_TOKEN"], chat_id=424242)',
+        "",
+        "Only a button pressed in that chat will count as an answer.",
+    ]
+    assert telegram.token not in screen.text
+
+
+def test_the_printed_next_step_makes_an_approver_for_that_chat(cp, telegram):
+    screen = Screen(lambda code: telegram.say(code, from_id=OWNER))
+    environ = {TOKEN_NAME: telegram.token}
+    assert main([], environ=environ, api=telegram.api, say=screen, wait_seconds=30) == 0
+    (line,) = [line for line in screen.lines if "TelegramApprover(" in line]
+    names = {"TelegramApprover": TelegramApprover, "cp": cp, "os": type("os", (), {"environ": environ})}
+    exec(line.strip(), names)
+    assert names["approver"]._chat_id == OWNER and names["approver"]._token == telegram.token
+
+
+@pytest.mark.parametrize("environ", [{}, {TOKEN_NAME: ""}, {TOKEN_NAME: "   "}, {"TELEGRAM_TOKEN": "1234567890:in-some-other-name"}])
+def test_with_no_token_the_command_says_how_to_give_one_and_calls_nothing(telegram, environ):
+    screen = Screen()
+    assert main([], environ=environ, api=telegram.api, say=screen) == 2
+    assert screen.lines == [NO_TOKEN] and "read -s KETTLE_TELEGRAM_TOKEN && export KETTLE_TELEGRAM_TOKEN" in NO_TOKEN
+    assert telegram.calls == [] and telegram.wrong_token == 0
+
+
+@pytest.mark.parametrize("argv", [["--token", "1234567890:given-on-the-command-line"], ["1234567890:given-on-the-command-line"], ["--help"], [""]])
+def test_the_command_takes_no_arguments_so_a_token_cannot_be_typed_where_the_shell_keeps_it(telegram, argv):
+    screen = Screen()
+    assert main(argv, environ={TOKEN_NAME: telegram.token}, api=telegram.api, say=screen, wait_seconds=1) == 2
+    assert screen.lines == [USAGE]
+    assert telegram.calls == [] and telegram.wrong_token == 0
+
+
+def test_the_command_says_why_no_chat_was_found_without_the_token(telegram):
+    wrong_shape, unknown = "my-bot-token", "1234567890:another-token-of-the-right-shape"
+    screen = Screen()
+    assert main([], environ={TOKEN_NAME: wrong_shape}, api=telegram.api, say=screen) == 1
+    assert screen.lines == ["No chat id: that is not the shape of a bot token (the value given is not shown)."]
+    screen = Screen()
+    assert main([], environ={TOKEN_NAME: unknown}, api=telegram.api, say=screen) == 1
+    assert screen.lines == ["No chat id: Telegram refused getMe (401: Unauthorized)."]
+    screen = Screen()
+    assert main([], environ={TOKEN_NAME: telegram.token}, api=telegram.api, say=screen, wait_seconds=1) == 1
+    assert screen.lines[3:] == ["No chat id: no message with the code came in time."] and telegram.token not in screen.text
+
+
+def run_the_command(*arguments):
+    """Run python -m kettle.telegram for real, with no token anywhere near it, so it can only stop before any call."""
+    environ = {"PYTHONPATH": os.path.dirname(os.path.dirname(kettle.__file__))}
+    return subprocess.run([sys.executable, "-m", "kettle.telegram", *arguments], env=environ, capture_output=True, text=True, timeout=60)
+
+
+def test_the_command_runs_as_python_m_kettle_telegram():
+    done = run_the_command()
+    assert (done.returncode, done.stdout, done.stderr) == (2, NO_TOKEN + "\n", "")
+    done = run_the_command("--token", "1234567890:given-on-the-command-line")
+    assert (done.returncode, done.stdout, done.stderr) == (2, USAGE + "\n", "")

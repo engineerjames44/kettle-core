@@ -36,11 +36,20 @@ listen on one bot.
 
 This is not a wall against code that runs in the same process: such code can
 reach the checkpoint itself. See the README.
+
+To find your chat_id, with the token in KETTLE_TELEGRAM_TOKEN:
+
+    python -m kettle.telegram
+
+It shows a code, waits for you to send that code to your bot, and prints the
+number of the chat it came from.
 """
 
 from __future__ import annotations
 
+import hmac
 import json
+import os
 import re
 import secrets
 import sys
@@ -61,13 +70,30 @@ MAX_PARTS = 5  # a preview that needs more messages than this cannot be approved
 TOKEN_REMOVED = "[token removed]"
 REPORT_AGAIN_SECONDS = 300.0  # a fault that goes on is reported again this often
 
-FIRST_LINE = "An agent wants to do this. Nothing has run yet."
-HOW_TO = "Approve runs exactly what is shown above, once. Deny runs nothing."
+FIRST_LINE = "Approval needed"
+HOW_TO = "Approve runs exactly what is in the box, once. Deny runs nothing."
+HOW_TO_PARTS = "Approve runs exactly what is in the boxes of all the parts, once. Deny runs nothing."
+FIRST_TIME = "\U0001f195 First time: "  # the NEW sign
+APPROVE, DENY = "\u2705 Approve", "\u274c Deny"  # a tick and a cross
+SENT_NOTE = "kettle.telegram: {tool} is with Telegram, on its way to your phone (fingerprint {start}...). Waiting for your answer."
+NAMES_SHOWN = 3  # first-time inputs named above the box; more than this are counted
 NOT_YOURS = "Only the owner can answer this."
 NOT_OPEN = "That request is no longer open."
 TOO_SOON = "Too soon. Read it, then press again."
 NOT_HERE = "This action is too long to approve on a phone."
 NO_ANSWER = "This action needs the owner's yes. No answer came in time. Nothing was run."
+
+TOKEN_NAME = "KETTLE_TELEGRAM_TOKEN"
+CODE_DIGITS = 6  # in the code that shows which chat is yours
+WRONG_CODES = 5  # wrong codes taken before the search stops
+OLD_ROUNDS = 50  # calls made to pass over what was sent before the code was shown
+FOUND_NOTE = "Kettle found this chat. Held actions are sent here once your agent is given this chat's number."
+USAGE = "usage: python -m kettle.telegram    (it takes no arguments; the token is read from KETTLE_TELEGRAM_TOKEN)"
+NO_TOKEN = """KETTLE_TELEGRAM_TOKEN is not set. Give the token to this terminal without showing it or saving it:
+
+    read -s KETTLE_TELEGRAM_TOKEN && export KETTLE_TELEGRAM_TOKEN
+
+Paste the token, press Enter, and run this again."""
 
 
 class TelegramError(Exception):
@@ -112,6 +138,7 @@ class TelegramApprover:
         retry_seconds: float = 1.0,
         clock: Callable[[], float] = time.monotonic,
         problem: Optional[Callable[[str], Any]] = None,
+        sent: Optional[Callable[[str], Any]] = None,
     ) -> None:
         """checkpoint is the Checkpoint whose held actions are sent. Keep this object on the owner's side of your app.
 
@@ -120,6 +147,11 @@ class TelegramApprover:
 
         problem is called with a short line when Telegram cannot be reached. With
         none, the line is printed to stderr. It never holds the token.
+
+        sent is called with a short line each time Telegram has taken a held action,
+        buttons and all. With none, nothing is said. The line names the tool and the
+        start of the fingerprint, never a value. Telegram having it does not mean
+        the phone shows it yet.
         """
         if type(token) is not str or not re.fullmatch(r"[0-9]{1,20}:[A-Za-z0-9_-]{1,120}", token):
             raise TelegramError("that is not the shape of a bot token (the value given is not shown)")
@@ -144,6 +176,7 @@ class TelegramApprover:
         self._poll, self._long_poll, self._retry = float(poll_seconds), int(long_poll_seconds), float(retry_seconds)
         self._clock = clock
         self._problem = problem
+        self._sent = sent
         handlers: list = [_NoRedirects]
         if self._api.startswith("http://"):  # this machine: never by way of a proxy
             handlers.append(urllib.request.ProxyHandler({}))
@@ -248,7 +281,7 @@ class TelegramApprover:
             new = [item for item in waiting if item["request_id"] not in self._shown]
             room = self._at_once - len(self._shown)
             for index, item in enumerate(new[: max(room, 0)]):
-                parts, can_approve = _parts(item["preview"], len(new) - index - 1, self._max_parts)
+                parts, can_approve = _parts(item["preview"], len(new) - index - 1, self._max_parts, item["tool"], item.get("first_time"))
                 shown = _Shown(item["request_id"], item["fingerprint"], item["tool"], parts, can_approve)
                 self._shown[shown.request_id] = self._nonces[shown.nonce] = shown
             to_send = [shown for shown in self._shown.values() if shown.buttons_message is None]
@@ -265,8 +298,8 @@ class TelegramApprover:
             body: dict = {"chat_id": self._chat_id, "text": text, "entities": entities, "link_preview_options": {"is_disabled": True}}
             last = shown.sent == len(shown.parts) - 1
             if last:
-                keys = [{"text": "Approve", "callback_data": "a:" + shown.nonce}] if shown.can_approve else []
-                body["reply_markup"] = {"inline_keyboard": [keys + [{"text": "Deny", "callback_data": "d:" + shown.nonce}]]}
+                keys = [{"text": APPROVE, "callback_data": "a:" + shown.nonce}] if shown.can_approve else []
+                body["reply_markup"] = {"inline_keyboard": [keys + [{"text": DENY, "callback_data": "d:" + shown.nonce}]]}
             sent = self._call("sendMessage", body)
             message_id = sent.get("message_id") if type(sent) is dict else None
             if type(message_id) is not int:
@@ -275,6 +308,17 @@ class TelegramApprover:
                 shown.sent += 1
                 if last:
                     shown.buttons_message, shown.shown_at = message_id, self._clock()
+            if last:
+                self._say_sent(shown)
+
+    def _say_sent(self, shown: _Shown) -> None:
+        """Tell the owner's side that Telegram has the question. Whether the phone shows it is not known here."""
+        if self._sent is None:
+            return
+        try:
+            self._sent(SENT_NOTE.format(tool=shown.tool if _plain(shown.tool) else "an action", start=shown.fingerprint[:12]))
+        except Exception:  # a broken reporter does not stop the approver
+            pass
 
     def _listen_step(self) -> None:
         updates = self._call("getUpdates", {"offset": self._offset, "timeout": self._long_poll, "allowed_updates": ["callback_query"]}, self._long_poll + 10)
@@ -394,7 +438,7 @@ def _checked_api(api: Any) -> str:
     return f"{parts.scheme}://{parts.netloc}"
 
 
-def _parts(preview: str, behind: int, max_parts: int = MAX_PARTS) -> tuple[list, bool]:
+def _parts(preview: str, behind: int, max_parts: int = MAX_PARTS, tool: Any = None, first_time: Any = None) -> tuple[list, bool]:
     """The messages for one held action, each as (text, entities), and whether it can be approved here.
 
     The preview is sent as it is, as a block of fixed-width text. It is marked as
@@ -402,6 +446,10 @@ def _parts(preview: str, behind: int, max_parts: int = MAX_PARTS) -> tuple[list,
     be read as formatting or as a link. A preview that does not fit in one message
     carries on in the next. One that would need more than max_parts is too long to
     read on a phone: its start is sent, with a Deny button only.
+
+    Above the box, in bold, is a headline with the tool's name, and a line that
+    names the inputs marked first time. Both are names from your own rules, never
+    a value, and only a short plain name is put there. The box says all of it.
     """
     lines = preview.split("\n")
     blocks, block = [], ""
@@ -419,9 +467,16 @@ def _parts(preview: str, behind: int, max_parts: int = MAX_PARTS) -> tuple[list,
         blocks = blocks[:1]
     parts = []
     for number, block in enumerate(blocks, 1):
-        head = []
+        head, marks = [], []
         if number == 1:
             head.append(FIRST_LINE)
+            if _plain(tool):
+                head.append(tool)
+            marks.append({"type": "bold", "offset": 0, "length": _units("\n".join(head))})
+            new = list(first_time) if type(first_time) in (list, tuple) else []
+            if new:
+                named = len(new) <= NAMES_SHOWN and all(_plain(name) for name in new)
+                head.append(FIRST_TIME + (", ".join(new) if named else f"{len(new)} input{'' if len(new) == 1 else 's'}"))
             if behind:
                 head.append(f"{behind} more {'is' if behind == 1 else 'are'} waiting after this one.")
         if len(blocks) > 1:
@@ -430,14 +485,141 @@ def _parts(preview: str, behind: int, max_parts: int = MAX_PARTS) -> tuple[list,
         if not can_approve:
             below = f"\n\n{NOT_HERE} It is {len(lines)} lines long and only the start is shown. Approve it where you can read all of it, or deny it here."
         elif number == len(blocks):
-            below = "\n\n" + HOW_TO
+            below = "\n\n" + (HOW_TO if len(blocks) == 1 else HOW_TO_PARTS)
         else:
             below = ""
         block = block or " "
-        parts.append((above + block + below, [{"type": "pre", "offset": _units(above), "length": _units(block)}]))
+        marks.append({"type": "pre", "offset": _units(above), "length": _units(block)})
+        if can_approve and number == len(blocks):
+            marks.append({"type": "italic", "offset": _units(above + block) + 2, "length": _units(below) - 2})
+        parts.append((above + block + below, marks))
     return parts, can_approve
+
+
+def _plain(name: Any) -> bool:
+    """Whether a name is short and plain enough to stand above the box."""
+    return type(name) is str and re.fullmatch(r"[A-Za-z0-9_.:-]{1,48}", name) is not None
 
 
 def _units(text: str) -> int:
     """The length of text as Telegram counts it, in UTF-16 units."""
     return len(text.encode("utf-16-le")) // 2
+
+
+def find_chat_id(
+    token: str,
+    *,
+    api: str = API,
+    wait_seconds: float = 120.0,
+    long_poll_seconds: int = 25,
+    say: Callable[[str], Any] = print,
+    clock: Callable[[], float] = time.monotonic,
+) -> int:
+    """Find the number of your own private chat with the bot, to pass as chat_id.
+
+    Anyone who knows a bot's name can write to it, so the first chat that writes is
+    not taken as yours. A code is shown here, on your screen, and only a private
+    chat that sends that code is yours. A code that turns up in a group has been
+    seen by the group and is no longer good. What was sent to the bot before the
+    code was shown is passed over. Raises TelegramError if no chat is found; the
+    message never holds the token.
+    """
+    if type(wait_seconds) not in (int, float) or wait_seconds <= 0:
+        raise TelegramError("wait_seconds must be a number above 0")
+    line = TelegramApprover(None, token=token, chat_id=1, api=api)  # only its line to Telegram is used; nothing is sent or listened to as chat 1
+    bot = line._call("getMe", {})
+    name = bot.get("username") if type(bot) is dict else None
+    if type(name) is not str or not re.fullmatch(r"[A-Za-z0-9_]{1,64}", name):
+        raise TelegramError("Telegram did not say which bot this token belongs to")
+    offset = _skip_old(line)
+    code = "".join(secrets.choice("0123456789") for _ in range(CODE_DIGITS))
+    say(f"This token belongs to the bot @{name}.")
+    say(f"Open your chat with @{name} in Telegram and send it this code: {code}")
+    say(f"Waiting up to {int(wait_seconds)} seconds. Only that code, sent in a private chat, counts.")
+    end = clock() + wait_seconds
+    wrong = 0
+    while True:
+        left = end - clock()
+        if left <= 0:
+            raise TelegramError("no message with the code came in time")
+        poll = max(0, min(int(long_poll_seconds), max(1, int(left))))  # a wait does not run far past the limit
+        updates = line._call("getUpdates", {"offset": offset, "timeout": poll, "allowed_updates": ["message"]}, poll + 10)
+        for update in updates if type(updates) is list else []:
+            number = update.get("update_id") if type(update) is dict else None
+            if type(number) is not int:
+                continue
+            offset = max(offset, number + 1)
+            message = update.get("message") if type(update.get("message")) is dict else {}
+            sent = message.get("text")
+            if type(sent) is not str or not re.fullmatch(rf"[0-9]{{{CODE_DIGITS}}}", sent.strip()):
+                continue  # anything that is not a code is not looked at, and is not shown
+            sender, chat = (message.get(key) if type(message.get(key)) is dict else {} for key in ("from", "chat"))
+            chat_id = chat.get("id")
+            right = hmac.compare_digest(sent.strip(), code)
+            private = chat.get("type") == "private" and type(chat_id) is int and chat_id > 0 and sender.get("id") == chat_id
+            if right and private:
+                _found(line, chat_id, offset)
+                return chat_id
+            if right:
+                raise TelegramError("the code was sent in a group, so others have seen it. Run this again and send the new code in your private chat with the bot")
+            wrong += 1
+            if wrong >= WRONG_CODES:
+                raise TelegramError(f"{WRONG_CODES} wrong codes were sent. Run this again for a new code")
+
+
+def _skip_old(line: TelegramApprover) -> int:
+    """Pass over what was sent to the bot before the code was shown: none of it can be the code. Returns where to listen from."""
+    offset = 0
+    for _ in range(OLD_ROUNDS):
+        updates = line._call("getUpdates", {"offset": offset, "timeout": 0, "allowed_updates": ["message"]})
+        numbers = [update.get("update_id") for update in updates if type(update) is dict] if type(updates) is list else []
+        numbers = [number for number in numbers if type(number) is int]
+        if not numbers:
+            break
+        offset = max(offset, max(numbers) + 1)
+    return offset
+
+
+def _found(line: TelegramApprover, chat_id: int, offset: int) -> None:
+    """Tell Telegram the code has been read, and say so in the chat. The chat is already found: a fault here changes nothing."""
+    for method, body in (
+        ("getUpdates", {"offset": offset, "timeout": 0, "allowed_updates": ["message"]}),
+        ("sendMessage", {"chat_id": chat_id, "text": FOUND_NOTE}),
+    ):
+        try:
+            line._call(method, body)
+        except TelegramError:
+            pass
+
+
+def main(
+    argv: Optional[list] = None, *, environ: Optional[Any] = None, api: str = API, say: Callable[[str], Any] = print, wait_seconds: float = 120.0
+) -> int:
+    """python -m kettle.telegram: print your chat id and the next step. Returns 0 if found, 1 if not, 2 if it could not start."""
+    argv = sys.argv[1:] if argv is None else argv
+    environ = os.environ if environ is None else environ
+    if argv:
+        say(USAGE)
+        return 2
+    token = environ.get(TOKEN_NAME, "").strip()
+    if not token:
+        say(NO_TOKEN)
+        return 2
+    try:
+        chat_id = find_chat_id(token, api=api, say=say, wait_seconds=wait_seconds)
+    except TelegramError as error:
+        say(f"No chat id: {error}.")
+        return 1
+    say("")
+    say(f"Your chat id is {chat_id}")
+    say("")
+    say("Next step: give that number to the approver in your agent's code.")
+    say("")
+    say(f'    approver = TelegramApprover(cp, token=os.environ["{TOKEN_NAME}"], chat_id={chat_id})')
+    say("")
+    say("Only a button pressed in that chat will count as an answer.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

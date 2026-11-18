@@ -65,7 +65,7 @@ MUTANTS = [
     ("phone: old buttons work again after a restart", TG, rep("            self._shown.clear()\n            self._nonces.clear()\n", "")),
     ("phone: every held action is sent at once", TG, rep("room = self._at_once - len(self._shown)", "room = len(new)")),
     ("phone: an approve at once counts", TG, rep('            elif kind == "a" and self._clock() - shown.shown_at < self._min_read:\n                return_text = TOO_SOON\n', "")),
-    ("phone: an action too long to read still gets an Approve button", TG, rep('[{"text": "Approve", "callback_data": "a:" + shown.nonce}] if shown.can_approve else []', '[{"text": "Approve", "callback_data": "a:" + shown.nonce}]')),
+    ("phone: an action too long to read still gets an Approve button", TG, rep('[{"text": APPROVE, "callback_data": "a:" + shown.nonce}] if shown.can_approve else []', '[{"text": APPROVE, "callback_data": "a:" + shown.nonce}]')),
     ("phone: an approve made up for a Deny-only action counts", TG, rep('            elif kind == "a" and not shown.can_approve:\n                return_text = NOT_HERE\n', "")),
     ("phone: any number of parts can be approved", TG, rep("can_approve = len(blocks) <= max_parts", "can_approve = True")),
     ("phone: a typed yes counts", TG, rep(NOT_A_PRESS, TYPED_YES + NOT_A_PRESS)),

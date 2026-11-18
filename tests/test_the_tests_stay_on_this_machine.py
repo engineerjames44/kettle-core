@@ -8,7 +8,7 @@ import pytest
 
 from kettle.attacktest import __main__ as cli
 from kettle.attacktest.pretend_telegram import TOKEN
-from kettle.telegram import API, TelegramApprover
+from kettle.telegram import API, TOKEN_NAME, TelegramApprover, main
 
 
 @pytest.mark.parametrize("host", ["api.anthropic.com", "api.openai.com", "93.184.216.34"])
@@ -56,3 +56,10 @@ def test_a_telegram_approver_left_on_the_real_address_cannot_call_out(cp, held):
         "kettle.telegram: Telegram could not be reached for sendMessage (AssertionError). Nothing is approved while this lasts.",
     ]
     assert cp.status(held.request_id)["state"] == "held"
+
+
+def test_the_chat_id_command_left_on_the_real_address_cannot_call_out():
+    """python -m kettle.telegram points at the real Telegram. From a test, it reaches nothing and finds nothing."""
+    said = []
+    assert main([], environ={TOKEN_NAME: TOKEN}, say=said.append, wait_seconds=1) == 1
+    assert said == ["No chat id: Telegram could not be reached for getMe (AssertionError)."]

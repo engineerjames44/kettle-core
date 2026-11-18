@@ -5,14 +5,19 @@
 The approver carries a question to a phone and an answer back, so the breaks here are
 ways a yes could come from the wrong person, the wrong message or the wrong action,
 ways the owner could be shown something other than the action, and ways the token
-could leak. The tests talk to a pretend Telegram on this machine, never the real one.
+could leak. The last group breaks python -m kettle.telegram, which finds the owner's
+chat: ways another chat could be taken as the owner's. The group before it breaks
+the look of the message: the headline, the line that names what is new, and the marks
+for bold and italic, which must never reach into the box or show a name that is not
+short and plain. After it come breaks of the line that says Telegram has the question.
+The tests talk to a pretend Telegram on this machine, never the real one.
 """
 
 from _runner import nth, rep, run
 
 TESTS = ["test_telegram.py", "test_the_tests_stay_on_this_machine.py"]
 
-TG = "telegram.py"
+TG, PT = "telegram.py", "attacktest/pretend_telegram.py"
 
 APPROVE = "decision = self._checkpoint.approve(shown.request_id, shown.fingerprint, self._approver)"
 DENY = "decision = self._checkpoint.deny(shown.request_id, self._approver)"
@@ -57,14 +62,14 @@ MUTANTS = [
     ("sent: a button names the action", TG, rep("self.nonce = secrets.token_urlsafe(24)", "self.nonce = fingerprint[:32]")),
     ("sent: the code on a button is short", TG, rep("self.nonce = secrets.token_urlsafe(24)", "self.nonce = secrets.token_urlsafe(3)")),
     ("sent: two actions share one code", TG, rep("self.nonce = secrets.token_urlsafe(24)", 'self.nonce = "the-same-code-for-every-action-there-is"')),
-    ("sent: an action too long to read still gets an Approve button", TG, rep('[{"text": "Approve", "callback_data": "a:" + shown.nonce}] if shown.can_approve else []', '[{"text": "Approve", "callback_data": "a:" + shown.nonce}]')),
+    ("sent: an action too long to read still gets an Approve button", TG, rep('[{"text": APPROVE, "callback_data": "a:" + shown.nonce}] if shown.can_approve else []', '[{"text": APPROVE, "callback_data": "a:" + shown.nonce}]')),
     ("sent: the buttons go out before the rest of the action", TG, rep("last = shown.sent == len(shown.parts) - 1", "last = shown.sent == 0")),
     ("sent: an answer that names no message counts as sent", TG, rep('            if type(message_id) is not int:\n                raise TelegramError("Telegram did not say which message it sent")\n', "")),
     ("sent: every held action is sent at once", TG, rep("room = self._at_once - len(self._shown)", "room = len(new)")),
     ("sent: one more than at_once is sent", TG, rep("room = self._at_once - len(self._shown)", "room = self._at_once - len(self._shown) + 1")),
-    ("sent: how many are waiting is not said", TG, rep('parts, can_approve = _parts(item["preview"], len(new) - index - 1, self._max_parts)', 'parts, can_approve = _parts(item["preview"], 0, self._max_parts)')),
-    ("sent: how many are waiting is one too many", TG, rep('parts, can_approve = _parts(item["preview"], len(new) - index - 1, self._max_parts)', 'parts, can_approve = _parts(item["preview"], len(new) - index, self._max_parts)')),
-    ("sent: the setting for the most parts is not used", TG, rep('parts, can_approve = _parts(item["preview"], len(new) - index - 1, self._max_parts)', 'parts, can_approve = _parts(item["preview"], len(new) - index - 1)')),
+    ("sent: how many are waiting is not said", TG, rep('parts, can_approve = _parts(item["preview"], len(new) - index - 1, self._max_parts, item["tool"], item.get("first_time"))', 'parts, can_approve = _parts(item["preview"], 0, self._max_parts, item["tool"], item.get("first_time"))')),
+    ("sent: how many are waiting is one too many", TG, rep('parts, can_approve = _parts(item["preview"], len(new) - index - 1, self._max_parts, item["tool"], item.get("first_time"))', 'parts, can_approve = _parts(item["preview"], len(new) - index, self._max_parts, item["tool"], item.get("first_time"))')),
+    ("sent: the setting for the most parts is not used", TG, rep('parts, can_approve = _parts(item["preview"], len(new) - index - 1, self._max_parts, item["tool"], item.get("first_time"))', 'parts, can_approve = _parts(item["preview"], len(new) - index - 1, MAX_PARTS, item["tool"], item.get("first_time"))')),
     ("sent: an action that is no longer open keeps its buttons", TG, rep("        for shown in gone:  # answered somewhere else, or expired\n", "        for shown in []:  # answered somewhere else, or expired\n")),
     ("sent: an action that is no longer open is never forgotten", TG, rep("            for shown in gone:\n                self._forget(shown)\n", "")),
     ("sent: the state of an action that closed is not said", TG, rep("f\"No longer open ({found['state'] if found else 'gone'}). Nothing more can be done with it here.\"", '"No longer open. Nothing more can be done with it here."')),
@@ -79,7 +84,7 @@ MUTANTS = [
     ("parts: the first line is missing", TG, rep("            head.append(FIRST_LINE)\n", "            pass\n")),
     ("parts: the parts are not numbered", TG, rep("        if len(blocks) > 1:\n            head.append", "        if False:\n            head.append")),
     ("parts: where the buttons are is not said", TG, rep('(" The buttons are under the last part." if number < len(blocks) else "")', '""')),
-    ("parts: what Approve does is not said", TG, rep('            below = "\\n\\n" + HOW_TO\n', '            below = ""\n')),
+    ("parts: what Approve does is not said", TG, rep('            below = "\\n\\n" + (HOW_TO if len(blocks) == 1 else HOW_TO_PARTS)\n', '            below = ""\n')),
     ("parts: an action too long to read does not say so", TG, rep('below = f"\\n\\n{NOT_HERE} It is', 'below = f"\\n\\nIt is')),
     ("parts: the fixed-width mark starts in the wrong place", TG, rep('"offset": _units(above)', '"offset": 0')),
     ("parts: the fixed-width mark stops short", TG, rep('"length": _units(block)}', '"length": _units(block) - 1}')),
@@ -150,6 +155,84 @@ MUTANTS = [
     ("on_held: no answer is reported as a no", TG, rep("return SAID_NO if state == DENIED else NO_ANSWER", "return SAID_NO")),
     ("on_held: the approver is not started", TG, rep("        self.start()\n        state = self.wait(decision.request_id)", "        state = self.wait(decision.request_id, 3.0)")),
     ("on_held: a result that is not text is passed on as it is", TG, rep("(done.result if type(done.result) is str else str(done.result))", "done.result")),
+    # the look of the message: what stands around the box
+    ("look: the tool is not named in the headline", TG, rep("            if _plain(tool):\n                head.append(tool)\n", "")),
+    ("look: a tool name of any shape is put in the headline", TG, rep("            if _plain(tool):\n", "            if type(tool) is str:\n")),
+    ("look: the tool is not passed on to the message", TG, rep('self._max_parts, item["tool"], item.get("first_time"))', 'self._max_parts, None, item.get("first_time"))')),
+    ("look: the headline is not bold", TG, rep('            marks.append({"type": "bold", "offset": 0, "length": _units("\\n".join(head))})\n', "")),
+    ("look: the bold runs one place too far", TG, rep('"length": _units("\\n".join(head))})', '"length": _units("\\n".join(head)) + 1})')),
+    ("look: the bold covers only the first line", TG, rep('"length": _units("\\n".join(head))})', '"length": _units(head[0])})')),
+    ("look: what is new is not passed on to the message", TG, rep('item["tool"], item.get("first_time"))', 'item["tool"], None)')),
+    ("look: every watched input is named as new", TG, rep('item["tool"], item.get("first_time"))', 'item["tool"], item.get("watched"))')),
+    ("look: the first-time line is left out", TG, rep("            if new:\n                named", "            if False:\n                named")),
+    ("look: a first-time name of any shape is shown", TG, rep("named = len(new) <= NAMES_SHOWN and all(_plain(name) for name in new)", "named = len(new) <= NAMES_SHOWN and all(type(name) is str for name in new)")),
+    ("look: first-time names are not checked at all", TG, rep("named = len(new) <= NAMES_SHOWN and all(_plain(name) for name in new)", "named = len(new) <= NAMES_SHOWN")),
+    ("look: any number of first-time names is shown", TG, rep("named = len(new) <= NAMES_SHOWN and all(_plain(name) for name in new)", "named = all(_plain(name) for name in new)")),
+    ("look: one more first-time name is shown", TG, rep("NAMES_SHOWN = 3  #", "NAMES_SHOWN = 4  #")),
+    ("look: one fewer first-time name is shown", TG, rep("NAMES_SHOWN = 3  #", "NAMES_SHOWN = 2  #")),
+    ("look: one input is counted as inputs", TG, rep("""input{'' if len(new) == 1 else 's'}""", "inputs")),
+    ("look: first-time names that are not shown are not counted", TG, rep("""f"{len(new)} input{'' if len(new) == 1 else 's'}")""", '"some inputs")')),
+    ("look: a plain name can be one longer", TG, rep('re.fullmatch(r"[A-Za-z0-9_.:-]{1,48}", name)', 're.fullmatch(r"[A-Za-z0-9_.:-]{1,49}", name)')),
+    ("look: an empty name is plain", TG, rep('re.fullmatch(r"[A-Za-z0-9_.:-]{1,48}", name)', 're.fullmatch(r"[A-Za-z0-9_.:-]{0,48}", name)')),
+    ("look: a name is checked only at its start", TG, rep('re.fullmatch(r"[A-Za-z0-9_.:-]{1,48}", name)', 're.match(r"[A-Za-z0-9_.:-]{1,48}", name)')),
+    ("look: a name with a space or a bracket is plain", TG, rep('re.fullmatch(r"[A-Za-z0-9_.:-]{1,48}", name)', 're.fullmatch(r"[^\\n]{1,48}", name)')),
+    ("look: a name with a letter that is not plain is plain", TG, rep('re.fullmatch(r"[A-Za-z0-9_.:-]{1,48}", name)', 're.fullmatch(r"[\\w.:-]{1,48}", name)')),
+    ("look: a name that is not text is checked as text", TG, rep("return type(name) is str and re.fullmatch", "return re.fullmatch")),
+    ("look: what Approve does is not italic", TG, rep('        if can_approve and number == len(blocks):\n            marks.append({"type": "italic"', '        if False:\n            marks.append({"type": "italic"')),
+    ("look: the italic starts two places early", TG, rep('"offset": _units(above + block) + 2, "length": _units(below) - 2}', '"offset": _units(above + block), "length": _units(below)}')),
+    ("look: the italic reaches into the box", TG, rep('"offset": _units(above + block) + 2, "length": _units(below) - 2}', '"offset": _units(above + block) - 1, "length": _units(below) + 1}')),
+    ("look: the italic is placed by characters, not as Telegram counts", TG, rep('"offset": _units(above + block) + 2, "length": _units(below) - 2}', '"offset": len(above + block) + 2, "length": _units(below) - 2}')),
+    ("look: an action too long to approve gets the italic line too", TG, rep("        if can_approve and number == len(blocks):\n", "        if number == len(blocks):\n")),
+    ("look: a long action is told it is all in one box", TG, rep("(HOW_TO if len(blocks) == 1 else HOW_TO_PARTS)", "HOW_TO")),
+    ("look: a short action is told it has parts", TG, rep("(HOW_TO if len(blocks) == 1 else HOW_TO_PARTS)", "HOW_TO_PARTS")),
+    ("look: the Approve button reads Deny", TG, rep('APPROVE, DENY = "\\u2705 Approve", "\\u274c Deny"', 'DENY, APPROVE = "\\u2705 Approve", "\\u274c Deny"')),
+    ("look: the buttons have no signs", TG, rep('APPROVE, DENY = "\\u2705 Approve", "\\u274c Deny"', 'APPROVE, DENY = "Approve", "Deny"')),
+    ("look: the pretend Telegram places marks by characters", PT, rep('entity["offset"] + entity["length"] > units:', 'entity["offset"] + entity["length"] > len(text):')),
+    ("look: the pretend Telegram measures a message by characters", PT, rep("        if units > MESSAGE_LIMIT:\n", "        if len(text) > MESSAGE_LIMIT:\n")),
+    # saying that Telegram has it
+    ("told: nothing is said when Telegram has the question", TG, rep("            if last:\n                self._say_sent(shown)\n", "")),
+    ("told: it is said after every part", TG, rep("            if last:\n                self._say_sent(shown)\n", "            self._say_sent(shown)\n")),
+    ("told: it is said before Telegram has taken it", TG, rep('            sent = self._call("sendMessage", body)\n', '            if last:\n                self._say_sent(shown)\n            sent = self._call("sendMessage", body)\n', "                    shown.buttons_message, shown.shown_at = message_id, self._clock()\n            if last:\n                self._say_sent(shown)\n", "                    shown.buttons_message, shown.shown_at = message_id, self._clock()\n")),
+    ("told: the reporter given is not kept", TG, rep("        self._sent = sent\n", "        self._sent = None\n")),
+    ("told: it is printed when no reporter was given", TG, rep("        if self._sent is None:\n            return\n        try:\n            self._sent(SENT_NOTE", "        try:\n            (self._sent or print)(SENT_NOTE")),
+    ("told: a broken reporter stops the sending", TG, rep("        except Exception:  # a broken reporter does not stop the approver\n            pass\n", "        except TelegramError:\n            pass\n")),
+    ("told: a tool name of any shape is in the line", TG, rep('tool=shown.tool if _plain(shown.tool) else "an action"', "tool=shown.tool")),
+    ("told: the line holds the whole fingerprint", TG, rep("start=shown.fingerprint[:12])", "start=shown.fingerprint)")),
+    ("told: the line holds one more place of the fingerprint", TG, rep("start=shown.fingerprint[:12])", "start=shown.fingerprint[:13])")),
+    # finding your chat id: python -m kettle.telegram
+    ("chat id: a private chat that sends any code is taken", TG, rep("            if right and private:\n", "            if private:\n")),
+    ("chat id: any six digits count as the code", TG, rep("right = hmac.compare_digest(sent.strip(), code)", "right = True")),
+    ("chat id: a code with a space after it is a wrong code", TG, rep("right = hmac.compare_digest(sent.strip(), code)", "right = hmac.compare_digest(sent, code)")),
+    ("chat id: ordinary messages are counted as wrong codes", TG, rep('if type(sent) is not str or not re.fullmatch(rf"[0-9]{{{CODE_DIGITS}}}", sent.strip()):', "if type(sent) is not str:")),
+    ("chat id: a chat that is not private is taken", TG, rep('private = chat.get("type") == "private" and type(chat_id) is int', "private = type(chat_id) is int")),
+    ("chat id: the sender need not be the chat", TG, rep(' and sender.get("id") == chat_id\n', "\n")),
+    ("chat id: a chat numbered 0 or below is taken", TG, rep("type(chat_id) is int and chat_id > 0 and sender", "type(chat_id) is int and sender")),
+    ("chat id: a chat number that is not a whole number is taken", TG, rep("type(chat_id) is int and chat_id > 0 and sender", "chat_id > 0 and sender")),
+    ("chat id: the right code in a group is only passed over", TG, rep('            if right:\n                raise TelegramError("the code was sent in a group', '            if False:\n                raise TelegramError("the code was sent in a group')),
+    ("chat id: wrong codes are not counted", TG, rep("            wrong += 1\n", "            wrong += 0\n")),
+    ("chat id: one more wrong code is taken", TG, rep("if wrong >= WRONG_CODES:", "if wrong > WRONG_CODES:")),
+    ("chat id: the first wrong code stops the search", TG, rep("WRONG_CODES = 5  #", "WRONG_CODES = 1  #")),
+    ("chat id: what was sent before the code was shown is counted", TG, rep("    offset = _skip_old(line)\n", "    offset = 0\n")),
+    ("chat id: the last old message is left to be counted", TG, rep("        offset = max(offset, max(numbers) + 1)\n", "        offset = max(offset, max(numbers))\n")),
+    ("chat id: a message is read again on every round", TG, rep("            offset = max(offset, number + 1)\n", "            offset = max(offset, 0)\n")),
+    ("chat id: the code is one digit", TG, rep("CODE_DIGITS = 6  #", "CODE_DIGITS = 1  #")),
+    ("chat id: the code is the same every time", TG, rep('secrets.choice("0123456789") for _', '"0" for _')),
+    ("chat id: updates of every kind are asked for while waiting", TG, rep('{"offset": offset, "timeout": poll, "allowed_updates": ["message"]}', '{"offset": offset, "timeout": poll}')),
+    ("chat id: the code is left waiting at Telegram", TG, rep('        ("getUpdates", {"offset": offset, "timeout": 0, "allowed_updates": ["message"]}),\n', "")),
+    ("chat id: the chat is not told it was found", TG, rep('        ("sendMessage", {"chat_id": chat_id, "text": FOUND_NOTE}),\n', "")),
+    ("chat id: a fault after the chat is found loses it", TG, rep("            line._call(method, body)\n        except TelegramError:", "            line._call(method, body)\n        except ZeroDivisionError:")),
+    ("chat id: the time limit is three times longer", TG, rep("    end = clock() + wait_seconds\n", "    end = clock() + wait_seconds * 3\n")),
+    ("chat id: a wait on Telegram runs past the time limit", TG, rep("poll = max(0, min(int(long_poll_seconds), max(1, int(left))))", "poll = max(0, int(long_poll_seconds))")),
+    ("chat id: a time limit of any kind is taken", TG, rep("    if type(wait_seconds) not in (int, float) or wait_seconds <= 0:\n", "    if False:\n")),
+    ("chat id: a bot name of any shape is shown", TG, rep('if type(name) is not str or not re.fullmatch(r"[A-Za-z0-9_]{1,64}", name):', "if type(name) is not str:")),
+    ("command: arguments are let through", TG, rep("    if argv:\n        say(USAGE)\n        return 2\n", "")),
+    ("command: no token is not noticed", TG, rep("    if not token:\n        say(NO_TOKEN)\n        return 2\n", "")),
+    ("command: a token with a line break after it is refused", TG, rep('token = environ.get(TOKEN_NAME, "").strip()', 'token = environ.get(TOKEN_NAME, "")')),
+    ("command: the token is printed with the next step", TG, rep("""token=os.environ["{TOKEN_NAME}"], chat_id={chat_id})')""", """token="{token}", chat_id={chat_id})')""")),
+    ("command: the chat id is not printed", TG, rep('    say(f"Your chat id is {chat_id}")\n', '    say("Your chat id was found")\n')),
+    ("command: the reason no chat was found is left out", TG, rep('say(f"No chat id: {error}.")', 'say("No chat id.")')),
+    ("command: no chat found is reported as found", TG, rep('        say(f"No chat id: {error}.")\n        return 1\n', '        say(f"No chat id: {error}.")\n        return 0\n')),
+    ("command: python -m kettle.telegram does nothing", TG, rep('if __name__ == "__main__":\n    sys.exit(main())', 'if __name__ == "__main__":\n    pass')),
 ]
 
 if __name__ == "__main__":
