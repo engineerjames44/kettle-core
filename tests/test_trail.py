@@ -1070,8 +1070,8 @@ def test_the_whole_picture_for_the_changed_address_on_a_narrow_preview(db_path, 
         '      + mple"',
         "      ! first time: no approved action",
         "      ! has run with this value before",
-        "      ! source: not in the app's list:",
-        '      ! list: "contacts.txt"',
+        "      ! source: not in the app's list",
+        '      ! + "contacts.txt"',  # the name carries on below the words, without the word "list" twice
         "      ! source: the owner did not type",
         "      ! + it",
         "      ! source: returned by this",
@@ -1093,7 +1093,7 @@ def test_the_notes_say_the_same_words_at_every_width(db_path, world, clock):
         """The notes with the marks of a carried-on line, the line breaks and the spaces taken out."""
         texts = [line.lstrip(" ")[2:] for line in notes(preview)]
         joined = "".join(text[2:] if text.startswith("+ ") else text for text in texts).replace(" ", "")
-        return joined.replace("theapp'slist:list:", "theapp'slist")  # on a narrow preview the name of a list can start a line of its own
+        return joined
 
     usual = None
     for width in (PREVIEW_WIDTH, 77, 60, 52, 51, 38, 33, 32):
@@ -1118,18 +1118,18 @@ def test_the_name_of_a_list_stays_beside_its_words_on_a_narrow_preview_when_it_f
     trail = [entry(known=[["contacts.txt", False]])]
     assert "      ! source: not in the app's list \"contacts.txt\"" in record.preview(trail=trail, width=52).splitlines()  # 52 characters
     lines = record.preview(trail=trail, width=51).splitlines()
-    at = lines.index("      ! source: not in the app's list:")
-    assert lines[at + 1] == '      ! list: "contacts.txt"'
+    at = lines.index("      ! source: not in the app's list")
+    assert lines[at + 1] == '      ! + "contacts.txt"'
     long = record.preview(trail=[entry(known=[["c" * 100, True]])], width=40).splitlines()
-    at = long.index("      ! source: in the app's list:")
-    assert long[at + 1 : at + 5] == ['      ! list: "' + "c" * 25, "      ! + " + "c" * 30, "      ! + " + "c" * 30, "      ! + " + "c" * 15 + '"']
+    at = long.index("      ! source: in the app's list")
+    assert long[at + 1 : at + 5] == ['      ! + "' + "c" * 29, "      ! + " + "c" * 30, "      ! + " + "c" * 30, "      ! + " + "c" * 11 + '"']
     usual = record.preview(trail=[entry(known=[["c" * 100, True]])]).splitlines()
     assert "      ! source: in the app's list \"" + "c" * 35 in usual  # at the usual width the name starts beside the words, as it always has
 
 
 def test_at_narrow_widths_random_previews_with_a_trail_read_back_to_exactly_the_record_they_were_written_from():
     rng = random.Random(20261118)
-    fixed = ("source: ", "source, item ", "source not found for ", "call: ", "list: ", "+ ", "first time: ", "not plain ASCII: ")
+    fixed = ("source: ", "source, item ", "source not found for ", "call: ", "+ ", "first time: ", "not plain ASCII: ")
     for _ in range(150):
         inputs = {_tricky_text(rng, 3): _tricky_value(rng) for _ in range(rng.randint(1, 4))}
         record = ActionRecord.make(_tricky_text(rng, 3) or "tool", inputs, rng.choice([None, _tricky_text(rng, 3)]))

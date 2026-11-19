@@ -360,12 +360,12 @@ Fingerprint:
   there are no characters to spare, so a line is filled to the width.
 - A single space where a filled line is cut is written as `\u{0020}`: where the line ends if there is
   room, and at the start of the next line if there is not. The summary is still cut between words.
-- A summary that does not fit beside its heading starts on the next line.
+- A summary, an action name or who asked that does not fit beside its heading starts on the next line.
 - The fingerprint is cut into rows of the same length, so it can be compared row by row: one row from 68,
   two rows of 32 from 36, four rows of 16 below that.
 - A `!` note that does not fit carries on in the next line, which starts with `!` as well.
-- In the source trail, the name of a list that does not fit beside its words starts on a line of its own,
-  after `list:`.
+- In the source trail, the name of a list that does not fit beside its words carries on in the next line,
+  after `! +`.
 
 Kettle cannot find out how wide your screen is. A width set too high still wraps, and one set too low only
 makes the preview longer.
@@ -736,15 +736,15 @@ a comparison with the approval steps built into agent frameworks.
 
 ## What has been checked
 
-All of this uses no model and costs nothing. Measured on 2026-11-17, on macOS, on the code as it is
+All of this uses no model and costs nothing. Measured on 2026-11-17 and 2026-11-18, on macOS, on the code as it is
 here, which is newer than release 0.2.0 (see "A narrower screen" above). Where a row was measured on
 the 0.2.0 or the 0.1.0 code, it says so.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| The tests | `.venv/bin/pytest` | 5227 passed on Python 3.14.8 on 2026-11-18, with both extras installed (`claude` and `openai`). Not measured again on other versions or with no extras. On 2026-11-17, before the ready-made rules were added: 1119. For 0.2.0, on 2026-11-17: 1059 passed on 3.14.8. For 0.1.0, on 2026-11-15: 604 passed on 3.14.8 and 3.15.2; on 3.11.18, 603 passed and 1 was skipped (it needs 3.14); with neither extra, on 3.15.2, 598 passed and 6 were skipped. |
+| The tests | `.venv/bin/pytest` | 5228 passed on Python 3.14.8 on 2026-11-18, with both extras installed (`claude` and `openai`). Not measured again on other versions or with no extras. On 2026-11-17, before the ready-made rules were added: 1119. For 0.2.0, on 2026-11-17: 1059 passed on 3.14.8. For 0.1.0, on 2026-11-15: 604 passed on 3.14.8 and 3.15.2; on 3.11.18, 603 passed and 1 was skipped (it needs 3.14); with neither extra, on 3.15.2, 598 passed and 6 were skipped. |
 | The attack test's check of itself | `.venv/bin/python -m kettle.attacktest --self-check` | 8 of 8 checks held, on each of the two case sets (add `--cases fraud` for the second) |
-| Checkpoint and source trail broken on purpose | `.venv/bin/python checks/break_checkpoint.py` | 277 breaks tried, 277 caught by the tests |
+| Checkpoint and source trail broken on purpose | `.venv/bin/python checks/break_checkpoint.py` | 279 breaks tried, 279 caught by the tests |
 | Attack test broken on purpose | `.venv/bin/python checks/break_attacktest.py` | 107 breaks tried, 106 caught, 1 known and explained |
 | Adapters broken on purpose | `.venv/bin/python checks/break_adapters.py` | 43 breaks tried, 43 caught by the tests |
 | Telegram approver broken on purpose | `.venv/bin/python checks/break_telegram.py` | 198 breaks tried, 198 caught by the tests |
@@ -756,9 +756,10 @@ the 0.2.0 or the 0.1.0 code, it says so.
 | Previews read back | `.venv/bin/python checks/read_back.py` | 150,000 random records, each written at 78 and again at one narrower width (32 to 77, picked at random): 0 read back wrongly, no line longer than its width, no two different records sharing a preview |
 | The built package | see [RELEASING.md](https://github.com/engineerjames44/kettle-core/blob/main/RELEASING.md) | For 0.2.0, on 2026-11-17: the wheel and the source archive build from a clean copy of the committed files, and the wheel installed by itself into an empty environment on Python 3.11.18, 3.14.8 and 3.15.2 passes the self-check on both case sets and gives the same 25 tried, 23 stopped on the attacks on the yes. After the upload the same evening, `pip install kettle-labs==0.2.0` from PyPI into an empty environment on the same three Python versions passed the same checks with the same counts. For 0.1.0, on 2026-11-16, `pip install kettle-labs` from PyPI into an empty environment on Python 3.14.8 passed the two self-checks |
 
-- **The tests.** 4108 are for the ready-made rules in `src/kettle/rules.py`, the hold in `src/kettle/holds.py` and
-  the commands that check the attack test's own numbers, all new since 0.2.0 and not described in this README yet.
-  Of the rest, 433 are for the checkpoint, 301 for the attack test, 64 for the adapters, 211 for the
+- **The tests.** 4108 came with the ready-made rules in `src/kettle/rules.py`: for those rules, the hold in
+  `src/kettle/holds.py`, the commands that check the attack test's own numbers, and more cases for the source
+  trail and the attack test. All are new since 0.2.0 and not described in this README yet.
+  Of the rest, 434 are for the checkpoint, 301 for the attack test, 64 for the adapters, 211 for the
   Telegram approver, 39 for the attacks on the yes, 25 for the browser demo and 31 for the receipts. 8 run
   the examples and 7 check that the tests stay on this machine. Of the checkpoint's, the 102 in
   `tests/test_fixed_ways_around.py` are the ones that try a way around it (a changed action, a reused or

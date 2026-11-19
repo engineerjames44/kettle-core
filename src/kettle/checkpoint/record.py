@@ -422,9 +422,9 @@ def _trail_lines(trail: Any, inputs: dict, indent: str, width: int = PREVIEW_WID
             head = mark + who + ("in" if listed else "not in") + " the app's list "
             written = ['"'] + _pieces(name, quoted=True) + ['"']
             if width < PREVIEW_WIDTH and len(head) + sum(map(len, written)) > width:
-                # On a narrow preview, a name that does not fit beside these words starts on a line of its own.
-                say(("in" if listed else "not in") + " the app's list:")
-                head = mark + "list: "
+                # On a narrow preview, a name that does not fit beside these words carries on below them.
+                say(("in" if listed else "not in") + " the app's list")
+                head = more
             lines += _fold(head, written, more, width=width)
         if typed is not None:
             say("the owner typed it" if typed else "the owner did not type it")
@@ -452,8 +452,9 @@ def _text_lines(head: str, label: list[str], text: str, indent: str, noted: str 
     gap = " " if label else ""
     if "\n" not in text:
         value = ['"'] + _pieces(text, quoted=True) + ['"']
-        if words and width < PREVIEW_WIDTH and len(head) + sum(map(len, label)) + len(gap) + sum(map(len, value)) > width:
-            # On a narrow preview, a summary that does not fit beside its heading starts on a line of its own.
+        if head == "" and width < PREVIEW_WIDTH and len(head) + sum(map(len, label)) + len(gap) + sum(map(len, value)) > width:
+            # On a narrow preview, a value that does not fit beside its heading (the summary, the action, who asked)
+            # starts on a line of its own.
             lines = [head + "".join(label)] + _fold(more, value, more, words=True, width=width)
         else:
             lines = _fold(head, label + [gap + value[0]] + value[1:], more, words=words, width=width)

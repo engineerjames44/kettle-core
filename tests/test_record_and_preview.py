@@ -655,6 +655,26 @@ def test_a_narrow_summary_that_fits_beside_its_heading_stays_there_and_one_that_
     assert lines == ["Summary (written by the app):", "  + [2 lines]", "  | Pay Sam 20 euro for the jerseys", "  | and the cones"]
 
 
+def test_a_narrow_action_or_asker_that_does_not_fit_beside_its_heading_starts_below_it_whole():
+    record = ActionRecord.make("send_email", {"to": "sam"}, "Errand")
+    lines = record.preview(width=36).split("\n")
+    assert lines[:3] == ['Action: "send_email"', "Asked through (set by the app):", '  + "Errand"']  # not cut in the name
+    assert read_back(record.preview(width=36), 36)["actor"] == "Errand"
+    for width in WIDTHS[:-1]:
+        for name in ("Errand", "a" * 3, "a" * (width - 37), "a" * (width - 36), "research agent", "x" * 90):
+            for tool, actor in ((name or "t", None), ("t", name)):
+                record = ActionRecord.make(tool, {"k": "v"}, actor)
+                lines = record.preview(width=width).split("\n")
+                heading = "Action:" if actor is None else "Asked through (set by the app):"
+                at = next(index for index, line in enumerate(lines) if line.startswith(heading))
+                beside = len(heading) + len(' ""') + len(tool if actor is None else actor) <= width
+                assert (lines[at] != heading) == beside, (width, heading, name)
+                found = read_back(record.preview(width=width), width)
+                assert (found["tool"], found["actor"]) == (tool, actor)
+    usual = ActionRecord.make("t" * 60, {"k": "v"}, "a" * 60).preview().split("\n")
+    assert usual[0].startswith('Action: "ttt') and usual[1].startswith('Asked through (set by the app): "aaa')  # as it always has
+
+
 def test_the_last_words_of_a_narrow_summary_are_not_carried_down_when_they_fit():
     record = ActionRecord.make("pay", {"to": "sam"})
     lines = _summary_lines(record.preview("Pay Sam 20 euro for the jerseys, and then say so to me", width=PHONE))

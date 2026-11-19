@@ -17,10 +17,11 @@ CLOCK_IN = "            with self._store.write() as tx:\n                now = s
 PREVIEW = "preview = record.preview(summary, first_time, trail, self._preview_width)"  # first where an action is held, then in pending()
 TRACE = "trail = self._trail.trace(found.watch, record.inputs(), now) if self._trail is not None else []"
 NOT_FOUND = "if all(given or used for _, _, _, given, used in calls) and typed is not True and not any(listed for _, listed in lists):"
+LIST_CARRIED = "head = more"
 LIST_NAME = """written = ['"'] + _pieces(name, quoted=True) + ['"']"""
 CUT_SPACE = '            if last == " " and len(line) - 1 + len(last_space) <= width:\n                line = line[:-1] + last_space\n            elif last == " ":\n                line, lead = line[:-1], last_space'
 MEASURE = 'size = len(space) if fill and words and piece == " " and len(line) + left > room else len(piece)'
-OWN_LINE = "if words and width < PREVIEW_WIDTH and len(head) + sum(map(len, label)) + len(gap) + sum(map(len, value)) > width:"
+OWN_LINE = 'if head == "" and width < PREVIEW_WIDTH and len(head) + sum(map(len, label)) + len(gap) + sum(map(len, value)) > width:'
 NARROW_LIST = "if width < PREVIEW_WIDTH and len(head) + sum(map(len, written)) > width:"
 WIDTH_OK = "not MIN_PREVIEW_WIDTH <= preview_width <= PREVIEW_WIDTH"
 WIDTH_OK_R = "not MIN_PREVIEW_WIDTH <= width <= PREVIEW_WIDTH"
@@ -275,9 +276,11 @@ MUTANTS = [
     ("the last words of a narrow summary are carried down though they fit", R, rep(MEASURE, 'size = len(space) if fill and words and piece == " " else len(piece)')),
     ("a narrow value's spaces are given room like a summary's", R, rep(MEASURE, MEASURE.replace("fill and words and", "fill and"))),
     ("a narrow summary that does not fit beside its heading starts there anyway", R, rep(OWN_LINE, 'if False:')),
-    ("a narrow summary always starts under its heading", R, rep(OWN_LINE, 'if words and width < PREVIEW_WIDTH:')),
+    ("a narrow summary always starts under its heading", R, rep(OWN_LINE, 'if head == "" and width < PREVIEW_WIDTH:')),
     ("at the usual width a long summary starts under its heading", R, rep(OWN_LINE, OWN_LINE.replace("width < PREVIEW_WIDTH and ", ""))),
-    ("a narrow value that does not fit beside its name starts under it", R, rep(OWN_LINE, OWN_LINE.replace("words and ", ""))),
+    ("a narrow value that does not fit beside its name starts under it", R, rep(OWN_LINE, OWN_LINE.replace('head == "" and ', ""))),
+    ("a narrow action or asker that does not fit beside its heading is cut there anyway", R, rep(OWN_LINE, OWN_LINE.replace('head == "" and ', 'head == "" and words and '))),
+    ("a narrow list name that does not fit beside its words starts a note of its own", R, rep(LIST_CARRIED, "head = mark")),
     ("the fingerprint is not cut on a narrow preview", R, rep('    if len(whole) <= width:\n        return [whole]', '    if True:\n        return [whole]')),
     ("the rows of a cut fingerprint are not marked", R, rep('    more = "  + "\n    rows', '    more = "    "\n    rows')),
     ("the rows of a cut fingerprint are not all the same length", R, rep('    while len(fingerprint) % rows:\n        rows += 1\n', '')),
