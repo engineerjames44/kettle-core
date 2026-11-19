@@ -17,10 +17,11 @@ from _runner import nth, rep, run
 
 TESTS = ["test_telegram.py", "test_the_tests_stay_on_this_machine.py"]
 
-TG, PT = "telegram.py", "attacktest/pretend_telegram.py"
+TG, PT, C = "telegram.py", "attacktest/pretend_telegram.py", "checkpoint/checkpoint.py"
 
 APPROVE = "decision = self._checkpoint.approve(shown.request_id, shown.fingerprint, self._approver)"
 DENY = "decision = self._checkpoint.deny(shown.request_id, self._approver)"
+PREVIEW = "preview = record.preview(summary, first_time, trail, self._preview_width)"  # first where an action is held, then in pending()
 WHO = "if any(type(found) is not int or found != self._chat_id for found in ids) or chat.get(\"type\") != \"private\":"
 
 MUTANTS = [
@@ -233,6 +234,8 @@ MUTANTS = [
     ("command: the reason no chat was found is left out", TG, rep('say(f"No chat id: {error}.")', 'say("No chat id.")')),
     ("command: no chat found is reported as found", TG, rep('        say(f"No chat id: {error}.")\n        return 1\n', '        say(f"No chat id: {error}.")\n        return 0\n')),
     ("command: python -m kettle.telegram does nothing", TG, rep('if __name__ == "__main__":\n    sys.exit(main())', 'if __name__ == "__main__":\n    pass')),
+    # a checkpoint set to the width of a phone
+    ("width: the box is sent at the usual width, whatever the checkpoint was set to", C, lambda t: nth(t, PREVIEW, 'preview = record.preview(summary, first_time, trail)', 2)),
 ]
 
 if __name__ == "__main__":

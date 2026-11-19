@@ -195,6 +195,22 @@ def test_the_action_printed_reads_back_to_exactly_the_stored_one(cp, db_path):
     assert "‮" not in receipt["action"]  # the same safe drawing as the preview a human is shown
 
 
+def test_a_receipt_shows_the_action_at_the_usual_width_whatever_width_the_checkpoint_showed_it_at(db_path, world, clock):
+    narrow = Checkpoint(db_path, hold_seconds=600, clock=clock, preview_width=38)
+    add_tools(narrow, world)
+    inputs = {"to": "sam@example.com", "body": "long " * 40}
+    try:
+        held = yes_and_run(narrow, "send_email", inputs)
+        assert max(len(line) for line in held.preview.split("\n")) == 38
+        report = verify.receipts(db_path)
+    finally:
+        narrow.close()
+    (receipt,) = report["receipts"]
+    assert report["wrong"] == [] and report["log_ok"] is True
+    assert receipt["action"] == ActionRecord.make("send_email", inputs).preview() != held.preview
+    assert receipt["fingerprint"] == held.fingerprint  # the width was never part of the action
+
+
 # ---- the file is only read ---------------------------------------------------------------
 
 

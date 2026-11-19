@@ -6,10 +6,10 @@ import re
 
 import pytest
 
-from kettle import NEEDS_YES
-from kettle.checkpoint.record import PREVIEW_WIDTH, ActionRecord, RecordError
+from kettle import NEEDS_YES, Checkpoint, CheckpointError
+from kettle.checkpoint.record import MIN_PREVIEW_WIDTH, PREVIEW_WIDTH, WORD_LIMIT, ActionRecord, RecordError
 
-from conftest import EMAIL
+from conftest import EMAIL, add_tools
 
 
 def fp(tool, inputs, actor=None):
@@ -288,10 +288,13 @@ def _read_value(rest, lines, indent):
 _WHOLE_CODE = re.compile(r"\\u\{[0-9A-F]{4,6}\}|\\u[0-9a-f]{4}|\\[^u]")
 
 
-def read_back(preview):
+_HEADS = ("Summary (written by the app):", "Action:", "Asked through (set by the app):", "Fingerprint:")
+
+
+def read_back(preview, width=PREVIEW_WIDTH):
     lines = []
     for line in preview.split("\n"):
-        assert len(line) <= PREVIEW_WIDTH, "a line is too long"
+        assert len(line) <= width, "a line is too long"
         assert not line.endswith(" "), "a line ends with a space nobody could see"
         assert all(" " <= char <= "~" for char in line), "a character that is not plain printable ASCII"
         assert "  " not in line.lstrip(" "), "two spaces in a row, which nobody could count"
@@ -301,6 +304,8 @@ def read_back(preview):
         if mark == "! ":
             continue  # a note for the reader; it adds nothing to the record
         if mark == "+ ":
+            if lines[-1] in _HEADS:
+                lines[-1] += " "  # on a narrow preview the value can start on the line after these words
             lines[-1] += line.lstrip(" ")[2:]  # carried on from the line before
         else:
             lines.append(line)
@@ -457,6 +462,56 @@ def test_a_summary_cannot_change_the_inputs(cp, world):
     assert world.ran == [("send_email", EMAIL)]
 
 
+def _summary_lines(preview):
+    lines = preview.split("\n")
+    return lines[: next(index for index, line in enumerate(lines) if line.startswith("Action:"))]
+
+
+def test_a_long_summary_is_cut_between_words_and_still_reads_back_exactly():
+    summary = "Add 'Dinner with Aoife and the lads from home' to the calendar on Saturday 21 November at 7pm, for two hours"
+    preview = ActionRecord.make("add_event", {"title": "Dinner"}).preview(summary)
+    assert _summary_lines(preview) == [
+        "Summary (written by the app): \"Add 'Dinner with Aoife and the lads\\u{0020}",
+        "  + from home' to the calendar on Saturday 21 November at 7pm, for\\u{0020}",
+        '  + two hours"',
+    ]
+    assert read_back(preview)["summary"] == summary
+
+
+def test_no_word_of_a_summary_is_cut_in_two_unless_it_is_longer_than_the_limit():
+    rng = random.Random(20261117)
+    for _ in range(500):
+        words = ["".join(rng.choice("abcxyz',.") for _ in range(rng.randint(1, WORD_LIMIT - 1))) for _ in range(rng.randint(1, 60))]
+        summary = "\n".join(" ".join(words[at : at + 20]) for at in range(0, len(words), 20)) if rng.random() < 0.3 else " ".join(words)
+        preview = ActionRecord.make("t", {"k": "v"}).preview(summary)
+        assert read_back(preview)["summary"] == summary
+        lines = _summary_lines(preview)
+        for line, after in zip(lines, lines[1:]):
+            if after.startswith("  + "):
+                assert line.endswith("\\u{0020}"), "a summary line was cut inside a word: " + line
+        assert all(len(line) <= PREVIEW_WIDTH for line in lines)
+
+
+def test_a_word_too_long_to_carry_down_is_cut_where_the_line_ends():
+    for length in range(WORD_LIMIT + 1, 200, 7):
+        summary = "Pay " + "9" * length + " now"
+        preview = ActionRecord.make("t", {"k": "v"}).preview(summary)
+        assert read_back(preview)["summary"] == summary
+        assert all(len(line) <= PREVIEW_WIDTH for line in preview.split("\n"))
+    lines = _summary_lines(ActionRecord.make("t", {"k": "v"}).preview("Pay " + "9" * 100 + " now"))
+    assert lines == ['Summary (written by the app): "Pay ' + "9" * 35, "  + " + "9" * 65 + "\\u{0020}", '  + now"']
+
+
+def test_only_the_summary_is_cut_between_words_and_a_value_is_cut_where_the_line_ends():
+    text = " ".join(["abcdefghij"] * 20)
+    lines = ActionRecord.make("t", {"body": text}).preview(text).split("\n")
+    at = next(index for index, line in enumerate(lines) if line.startswith('  "body": '))
+    assert all(line.endswith("\\u{0020}") for line in lines[: at - 2])  # the summary, but for its last line
+    assert lines[at] == '  "body": "' + "abcdefghij " * 5 + "abcd"
+    assert lines[at + 1].startswith("      + efghij abcdefghij ")
+    assert read_back("\n".join(lines))["inputs"] == {"body": text}
+
+
 def test_what_pending_shows_is_what_was_asked(cp, held):
     waiting = cp.pending()
     assert [item["request_id"] for item in waiting] == [held.request_id]
@@ -500,3 +555,267 @@ def test_a_key_so_long_that_its_value_starts_on_the_next_line_is_still_read_one_
             assert read_back(preview)["inputs"] == {"k" * length: value}
     lines = ActionRecord.make("t", {"k" * 65: ["v"]}).preview().split("\n")
     assert lines[1:3] == ['  "' + "k" * 65 + '":', '      + ["v"]']
+
+
+# ---- a narrower preview, for a screen such as a phone ----
+
+WIDTHS = range(MIN_PREVIEW_WIDTH, PREVIEW_WIDTH + 1)
+PHONE = 38  # about what a phone shows on one line of a box of fixed-width text
+
+
+def test_the_usual_width_is_78_and_it_is_what_a_preview_has_when_none_is_asked_for():
+    assert (MIN_PREVIEW_WIDTH, PREVIEW_WIDTH) == (32, 78)
+    record = ActionRecord.make("send_email", {"to": "sam@example.com", "body": "word " * 60}, "worker")
+    assert record.preview("Send it", {"to": None}) == record.preview("Send it", {"to": None}, width=PREVIEW_WIDTH)
+
+
+@pytest.mark.parametrize("width", [31, 79, 0, -38, 10**6, True, 38.0, "38", None, [38]])
+def test_a_width_that_is_not_a_whole_number_from_32_to_78_is_refused(width):
+    with pytest.raises(RecordError, match="the width of a preview must be a whole number from 32 to 78"):
+        ActionRecord.make("t", {"k": "v"}).preview(width=width)
+
+
+def test_a_narrow_preview_as_a_phone_would_be_sent_it():
+    body = "Hi Sam, see you Saturday at the match. Bring the jerseys.\nJames"
+    record = ActionRecord.make("send_email", {"to": "sam.jones@example.com", "body": body}, "desk")
+    summary = "Send an email to sam.jones@example.com: Hi Sam, see you Saturday at the match"
+    preview = record.preview(summary, {"to": None}, width=PHONE)
+    assert preview.split("\n") == [
+        "! 1 input below is marked first time",
+        "Summary (written by the app):",
+        '  + "Send an email to\\u{0020}',
+        "  + sam.jones@example.com: Hi\\u{0020}",
+        "  + Sam, see you Saturday at\\u{0020}",
+        '  + the match"',
+        'Action: "send_email"',
+        'Asked through (set by the app): "desk"',
+        '  "body": [2 lines]',
+        "      | Hi Sam, see you Saturday at th",
+        "      + e match. Bring the jerseys.",
+        "      | James",
+        '  "to": "sam.jones@example.com"',
+        "      ! first time: no approved action",
+        "      ! has run with this value before",
+        "Fingerprint:",
+        "  + " + record.fingerprint[:32],
+        "  + " + record.fingerprint[32:],
+    ]
+    assert max(len(line) for line in preview.split("\n")) == PHONE
+    found = read_back(preview, PHONE)
+    assert ActionRecord.make(found["tool"], found["inputs"], found["actor"]) == record
+    assert found["summary"] == summary and found["fingerprint"] == record.fingerprint
+
+
+def _value_lines(preview):
+    lines = preview.split("\n")
+    return lines[1 : next(index for index, line in enumerate(lines) if line.startswith("Fingerprint:"))]
+
+
+def test_only_a_preview_narrower_than_the_usual_one_has_its_lines_filled():
+    record = ActionRecord.make("t", {"k": "a" * 200})
+    usual = _value_lines(record.preview())
+    assert usual[:2] == ['  "k": "' + "a" * 62, "      + " + "a" * 62]  # cut 8 characters early, as in every release so far
+    narrower = _value_lines(record.preview(width=PREVIEW_WIDTH - 1))
+    assert narrower[:2] == ['  "k": "' + "a" * 69, "      + " + "a" * 69]
+    for width in WIDTHS[:-1]:
+        lines = _value_lines(record.preview(width=width))
+        assert {len(line) for line in lines[:-1]} == {width} and len(lines[-1]) <= width
+
+
+def test_on_a_narrow_preview_a_space_where_a_value_is_cut_is_written_out():
+    def lines(value, width=PHONE):
+        return _value_lines(ActionRecord.make("t", {"k": value}).preview(width=width))[:2]
+
+    # The space would be the last character of a full line. There is no room to write it out there, so it starts the next line.
+    assert lines("a" * 29 + " b" + "c" * 40) == ['  "k": "' + "a" * 29, "      + \\u{0020}b" + "c" * 21]
+    assert lines(["a" * 28 + " b" + "c" * 40]) == ['  "k": ["' + "a" * 28, "      + \\u0020b" + "c" * 23]
+    # Before a code, which is never cut in two, a line can end early. Then the space is written out where the line ends, if it fits.
+    assert lines("a" * 22 + " \u00e9" + "c" * 40) == ['  "k": "' + "a" * 22 + "\\u{0020}", "      + \\u{00E9}" + "c" * 22]
+    assert lines("a" * 23 + " \u00e9" + "c" * 40) == ['  "k": "' + "a" * 23, "      + \\u{0020}\\u{00E9}" + "c" * 14]
+    for width in WIDTHS:
+        for length in range(width - 20, width + 20):
+            for value in ("a" * length + " b", ["a" * length + " b"], {"k": "a" * length + " b c"}, "a" * length + " \u202e b"):
+                preview = ActionRecord.make("t", {"a": value}).preview(width=width)
+                assert read_back(preview, width)["inputs"] == {"a": value}  # the reader refuses a line that starts or ends with a space
+
+
+def test_a_narrow_summary_that_fits_beside_its_heading_stays_there_and_one_that_does_not_starts_below_it():
+    record = ActionRecord.make("pay", {"to": "sam"})
+    for width in range(39, PREVIEW_WIDTH):
+        fits = "Pay Sam" + "!" * (width - 39)  # with the heading and the quotes, exactly the width
+        assert _summary_lines(record.preview(fits, width=width)) == ['Summary (written by the app): "' + fits + '"']
+        assert _summary_lines(record.preview(fits + "!", width=width)) == ["Summary (written by the app):", '  + "' + fits + '!"']
+    for width in WIDTHS[:-1]:
+        summary = "Pay Sam " + "!" * 12 + " for the jerseys and for the cones, and the bus to the match on Saturday"
+        lines = _summary_lines(record.preview(summary, width=width))
+        assert lines[0] == "Summary (written by the app):" and lines[1].startswith('  + "Pay Sam')
+        assert read_back(record.preview(summary, width=width), width)["summary"] == summary
+    assert _summary_lines(record.preview("Pay Sam", width=PHONE)) == ["Summary (written by the app):", '  + "Pay Sam"']
+    lines = _summary_lines(record.preview("Pay Sam 20 euro for the jerseys\nand the cones", width=PHONE))
+    assert lines == ["Summary (written by the app):", "  + [2 lines]", "  | Pay Sam 20 euro for the jerseys", "  | and the cones"]
+
+
+def test_the_last_words_of_a_narrow_summary_are_not_carried_down_when_they_fit():
+    record = ActionRecord.make("pay", {"to": "sam"})
+    lines = _summary_lines(record.preview("Pay Sam 20 euro for the jerseys, and then say so to me", width=PHONE))
+    # After "to" there is no room for a space written out. None is needed: the rest of the summary fits on the line.
+    assert lines == ["Summary (written by the app):", '  + "Pay Sam 20 euro for the\\u{0020}', '  + jerseys, and then say so to me"']
+
+
+def test_at_every_width_random_previews_read_back_to_exactly_the_record_they_were_written_from():
+    rng = random.Random(20261118)
+    for _ in range(300):
+        tool = _tricky_text(rng, 3) or "tool"
+        actor = rng.choice([None, _tricky_text(rng, 3)])
+        inputs = {_tricky_text(rng, 3): _tricky_value(rng) for _ in range(rng.randint(0, 4))}
+        summary = rng.choice([None, _tricky_text(rng, 4)])
+        first_time = {key: None for key in inputs if rng.random() < 0.3}
+        record = ActionRecord.make(tool, inputs, actor)
+        for width in WIDTHS:
+            found = read_back(record.preview(summary, first_time, width=width), width)  # the reader refuses a line longer than width
+            assert found["summary"] == (summary or None)
+            assert found["fingerprint"] == record.fingerprint
+            assert ActionRecord.make(found["tool"], found["inputs"], found["actor"]) == record
+
+
+def test_no_line_of_a_narrow_preview_is_longer_than_the_width_asked_for():
+    long = "sam@example.com," + " " * 300 + "thief@example.net" + "x" * 200 + "‮" * 40 + ' "' * 40
+    record = ActionRecord.make("t" * 90, {"k" * 90: long, "list": [long, {"k": long}], "lines": long + "\n" + long}, "a" * 90)
+    for width in WIDTHS:
+        lines = record.preview("s" * 90 + " " + long, {"list": [1, 2], "lines": None}, width=width).split("\n")
+        assert max(len(line) for line in lines) <= width
+        assert any(len(line) > width - 9 for line in lines)  # and the lines are not all far shorter than asked for
+        assert read_back("\n".join(lines), width)["inputs"] == record.inputs()
+
+
+def test_a_value_that_fits_on_a_narrow_line_is_written_the_way_it_always_is():
+    record = ActionRecord.make("pay", {"to": "sam", "amount": 20})
+    for width in WIDTHS:
+        assert record.preview(width=width).split("\n")[:3] == ['Action: "pay"', '  "amount": 20', '  "to": "sam"']
+
+
+def test_a_fingerprint_too_long_for_the_line_is_cut_into_rows_of_the_same_length():
+    record = ActionRecord.make("send_email", EMAIL)
+    for width in WIDTHS:
+        lines = record.preview(width=width).split("\n")
+        at = next(index for index, line in enumerate(lines) if line.startswith("Fingerprint:"))
+        last = lines[at:]
+        if width >= len("Fingerprint: ") + 64:
+            assert last == ["Fingerprint: " + record.fingerprint]
+            continue
+        assert last[0] == "Fingerprint:" and all(row.startswith("  + ") for row in last[1:])
+        rows = [row[4:] for row in last[1:]]
+        assert "".join(rows) == record.fingerprint
+        assert len({len(row) for row in rows}) == 1 and max(len(row) for row in last) <= width
+        assert len(rows) == (1 if width >= 68 else 2 if width >= 36 else 4)
+
+
+def test_the_notes_at_the_top_carry_on_after_a_mark_when_they_do_not_fit():
+    record = ActionRecord.make("send_many", {"to": "a@example.com", "cc": "b@example.com"})
+    lines = record.preview(first_time={"to": None, "cc": None}, width=MIN_PREVIEW_WIDTH).split("\n")
+    assert lines[:3] == ["! 2 inputs below are marked", "! + first time", 'Action: "send_many"']
+    assert record.preview(first_time={"to": None, "cc": None}, width=PHONE).split("\n")[0] == "! 2 inputs below are marked first time"
+
+
+def _notes_as_one(preview):
+    notes = [line.lstrip(" ")[2:] for line in preview.split("\n") if line.lstrip(" ").startswith("! ")]
+    return " ".join(note[2:] if note.startswith("+ ") else note for note in notes)
+
+
+def test_the_notes_under_an_input_say_the_same_words_at_every_width():
+    record = ActionRecord.make("send_email", {"to": ["sаm@example.com", "kim@example.com", "​x@example.com"], "body": "café"})
+    usual = _notes_as_one(record.preview(first_time={"to": [1, 3]}))
+    assert "first time: no approved action has run with items 1, 3 before" in usual
+    assert "not plain ASCII: U+0430 CYRILLIC SMALL LETTER A, U+200B ZERO WIDTH SPACE" in usual
+    for width in WIDTHS:
+        narrow = record.preview(first_time={"to": [1, 3]}, width=width)
+        assert _notes_as_one(narrow) == usual
+        assert read_back(narrow, width)["inputs"] == record.inputs()
+
+
+@pytest.mark.parametrize("width", [MIN_PREVIEW_WIDTH, 33, 37, PHONE, 39, 45, 60, 77])
+def test_on_a_narrow_preview_a_summary_is_still_cut_between_words(width):
+    rng = random.Random(width)
+    longest = min(WORD_LIMIT - 1, width - 13)  # a word no longer than this can always be carried down whole
+    for _ in range(100):
+        words = ["".join(rng.choice("abcxyz',.") for _ in range(rng.randint(1, longest))) for _ in range(rng.randint(1, 40))]
+        summary = " ".join(words)
+        preview = ActionRecord.make("t", {"k": "v"}).preview(summary, width=width)
+        assert read_back(preview, width)["summary"] == summary
+        lines = _summary_lines(preview)
+        if len(lines) == 1:
+            continue
+        assert lines[0] == "Summary (written by the app):"  # too long to sit beside these words, so it starts below them
+        for line, after in zip(lines[1:], lines[2:]):
+            assert line.endswith("\\u{0020}"), "a summary line was cut inside a word: " + line
+            next_word = after[len("  + ") :].split(" ")[0].removesuffix("\\u{0020}")
+            assert len(line) + 1 + len(next_word) > width, "a summary line was cut before it was full: " + line
+
+
+def test_on_a_narrow_preview_the_words_before_a_value_are_never_cut():
+    record = ActionRecord.make("t" * 40, {"k": "v"}, "a" * 40)
+    for width in WIDTHS:
+        lines = record.preview("s" * 40, width=width).split("\n")
+        heads = [line for line in lines if not line.startswith(" ")]
+        assert [head.split(":")[0] for head in heads] == ["Summary (written by the app)", "Action", "Asked through (set by the app)", "Fingerprint"]
+
+
+# ---- a checkpoint set to a narrower preview ----
+
+
+@pytest.mark.parametrize("width", [31, 79, 0, -38, True, 38.0, "38", None])
+def test_a_checkpoint_refuses_a_preview_width_that_is_not_a_whole_number_from_32_to_78(db_path, width):
+    with pytest.raises(CheckpointError, match="preview_width must be a whole number from 32 to 78"):
+        Checkpoint(db_path, preview_width=width)
+
+
+def test_a_checkpoint_set_to_a_narrow_width_shows_every_preview_at_that_width(db_path, world, clock):
+    cp = Checkpoint(db_path, hold_seconds=600, clock=clock, preview_width=PHONE)
+    cp.tool("send_email", world.send_email, level=NEEDS_YES, watch=["to"], describe=lambda inputs: f"Send an email to {inputs['to']}: {inputs['body']}")
+    inputs = {"to": "sam.jones@example.com", "body": "Hi Sam, see you Saturday at the match. Bring the jerseys and the cones if you can."}
+    held = cp.request("send_email", dict(inputs))
+    lines = held.preview.split("\n")
+    assert held.status == "held" and max(len(line) for line in lines) == PHONE
+    assert lines[:3] == ["! 1 input below is marked first time", "Summary (written by the app):", '  + "Send an email to\\u{0020}']
+    found = read_back(held.preview, PHONE)
+    assert found["inputs"] == inputs and found["summary"] == f"Send an email to {inputs['to']}: {inputs['body']}"
+    assert found["fingerprint"] == held.fingerprint
+    assert cp.pending()[0]["preview"] == held.preview
+    cp.close()
+
+
+def test_the_width_of_the_preview_is_no_part_of_what_a_yes_covers(db_path, world, clock):
+    """Two checkpoints on one store, one narrow. The record, the fingerprint and the yes are the same from either."""
+    usual = Checkpoint(db_path, hold_seconds=600, clock=clock)
+    narrow = Checkpoint(db_path, hold_seconds=600, clock=clock, preview_width=PHONE)
+    add_tools(usual, world)
+    add_tools(narrow, world)
+    inputs = {"to": "sam.jones@example.com", "body": "word " * 30 + "end"}
+    held = narrow.request("send_email", dict(inputs))
+    (seen,) = usual.pending()
+    assert seen["request_id"] == held.request_id and seen["fingerprint"] == held.fingerprint == fp("send_email", inputs)
+    assert seen["preview"] != held.preview and max(len(line) for line in seen["preview"].split("\n")) > PHONE
+    assert read_back(seen["preview"]) == read_back(held.preview, PHONE)
+    assert seen["preview"] == usual.request("send_email", dict(inputs)).preview  # the usual width is what it always was
+    assert usual.approve(held.request_id, held.fingerprint).status == "approved"  # a yes given from the wide preview
+    assert narrow.run(held.request_id).status == "ran"
+    assert world.ran == [("send_email", inputs)]
+    usual.close()
+    narrow.close()
+
+
+@pytest.mark.parametrize("width", [MIN_PREVIEW_WIDTH, PHONE, 55, PREVIEW_WIDTH])
+def test_a_narrow_checkpoint_holds_and_runs_actions_as_any_other_does(db_path, world, clock, width):
+    cp = Checkpoint(db_path, hold_seconds=600, clock=clock, preview_width=width)
+    add_tools(cp, world)
+    assert cp.request("read_note", {}).status == "ran"
+    assert cp.request("wipe_account", {}).status == "refused"
+    held = cp.request("pay", {"to": "sam", "amount": 20})
+    assert read_back(held.preview, width)["inputs"] == {"to": "sam", "amount": 20}
+    assert cp.run(held.request_id).status != "ran" and world.risky() == []
+    assert cp.deny(held.request_id).status == "denied"
+    again = cp.request("pay", {"to": "sam", "amount": 20})
+    assert cp.approve(again.request_id, held.fingerprint).status == "approved" and cp.run(again.request_id).status == "ran"
+    assert world.risky() == [("pay", {"to": "sam", "amount": 20})]
+    assert cp.verify_log()[0] is True
+    cp.close()

@@ -296,6 +296,9 @@ The rules it is written by:
 - A space at the start or end of a line of text, or next to another space, is written as `\u{0020}`.
 - No line is longer than 78 characters. A longer one is cut and carries on after a `+` mark. Each line of a
   text with line breaks starts with `|`.
+- A value is cut where the line ends, even inside a word. The app's summary is cut between words where it
+  can be, and the space at the cut is written as `\u{0020}` like any other space at the end of a line. A
+  word of more than 24 characters is still cut where the line ends.
 
 The point of these rules is that the preview can be read back to exactly one record, so two different actions
 are never shown as the same preview. The tests include a reader that checks this on random records built to be
@@ -306,11 +309,66 @@ What this costs, and what it does not catch:
 - Text that is not English is hard to read in the preview, because every non-ASCII letter is written as a code.
   This was a choice: exact over readable.
 - ASCII characters that look alike are not flagged (`I`, `l` and `1`; `O` and `0`; `rn` and `m`).
-- A screen narrower than 78 columns will still wrap the lines.
+- A screen that shows fewer than 78 characters on a line wraps the lines, unless the checkpoint is set to
+  its width: see "A narrower screen" below.
 - A list or dict value is written as JSON on one folded line. There the codes are JSON's (`\u202e`, not
   `\u{202E}`), a line break is `\n`, an emoji is two codes, and a single space right next to a quote is shown
   as it is.
 - Control characters such as tab get a code but no `!` line.
+
+#### A narrower screen
+
+*Newer than release 0.2.0. Not tried on a real phone yet: the tests run it against a pretend Telegram.*
+
+A phone shows fewer than 78 characters on a line. When the screen wraps a line, the piece that is pushed
+down starts with text from inside a value, with none of the preview's own marks in front of it. So the
+width can be set when the checkpoint is made:
+
+```python
+cp = Checkpoint("kettle.db", preview_width=38)
+```
+
+No line of a preview from that checkpoint is longer than 38 characters: in the decision, in `pending()`,
+and so in the box the Telegram approver sends. The width is a whole number from 32 to 78. A held email at 38:
+
+```
+! 1 input below is marked first time
+Summary (written by the app):
+  + "Send an email to\u{0020}
+  + sam.jones@example.com: Hi\u{0020}
+  + Sam, see you Saturday at\u{0020}
+  + the match"
+Action: "send_email"
+Asked through (set by the app): "desk"
+  "body": [2 lines]
+      | Hi Sam, see you Saturday at th
+      + e match. Bring the jerseys.
+      | James
+  "to": "sam.jones@example.com"
+      ! first time: no approved action
+      ! has run with this value before
+Fingerprint:
+  + c12c1590ff1ee5422bdcac7f458e629e
+  + 2975e9b5b72f55a12cc09eac839177d5
+```
+
+- **The width is no part of the action.** The fingerprint is the same at every width, and a yes given to
+  an action shown at one width runs it from a checkpoint set to another. A receipt shows the action at 78.
+- **It reads back to the same record.** The reader in the tests checks random records at every width from
+  32 to 78, and `checks/read_back.py` reads each of its records back at one narrower width as well.
+- **At 78 nothing changes.** A line is still cut 8 characters early, as in every release so far. Below 78
+  there are no characters to spare, so a line is filled to the width.
+- A single space where a filled line is cut is written as `\u{0020}`: where the line ends if there is
+  room, and at the start of the next line if there is not. The summary is still cut between words.
+- A summary that does not fit beside its heading starts on the next line.
+- The fingerprint is cut into rows of the same length, so it can be compared row by row: one row from 68,
+  two rows of 32 from 36, four rows of 16 below that.
+- A `!` note that does not fit carries on in the next line, which starts with `!` as well.
+- In the source trail, the name of a list that does not fit beside its words starts on a line of its own,
+  after `list:`.
+
+Kettle cannot find out how wide your screen is. A width set too high still wraps, and one set too low only
+makes the preview longer.
 
 ## Putting it in front of an agent you already have
 
@@ -424,6 +482,43 @@ To see on your own side when a question has gone out, pass `sent=print`. Each ti
 held action, buttons and all, it is called with one line that names the tool and the start of the
 fingerprint, never a value. Telegram having the message does not mean the phone shows it yet.
 
+If your app cannot wait (a chat bot with its own loop, for one), ask without waiting and look for the
+answer each time round your loop:
+
+```python
+approver.start()  # once, when your app starts
+waiting = []      # the ids of the held actions that have no answer yet
+
+
+def ask(name, inputs):
+    decision = cp.gate.request(name, inputs)  # comes back at once, held or not
+    if decision.status == "held":
+        waiting.append(decision.request_id)   # the approver sends it to the phone
+    return decision
+
+
+def answers():
+    """Call this each time round your own loop. It never waits."""
+    out = []
+    for request_id in list(waiting):
+        state = cp.status(request_id)["state"]
+        if state == "held":
+            continue  # no answer yet
+        waiting.remove(request_id)
+        done = cp.run(request_id) if state == "approved" else None  # a yes: run it, once
+        out.append((request_id, state, done))  # any other state: nothing is run here
+    return out
+```
+
+`ask` hands the model's call to the checkpoint and comes back at once. `answers` gives one line for each
+held action that has been settled since the last time: its id, its state, and for a yes the decision from
+running it (`done.status` is `"ran"` and `done.result` is what the tool gave back). The state is
+`"approved"`, `"denied"`, or `"expired"` when no answer came in time. Any state that is not `"approved"`
+is passed on with nothing run. You call `approver.start()` yourself here: with nothing waiting on
+`on_held`, nothing else starts it, and a held action is not sent until it is started. `status` and `run`
+belong to the checkpoint, not the gate, so keep `answers` in your own code and out of anything the model
+can call. The tests run these lines as they stand in this file.
+
 What counts as a yes:
 
 - Only a press of the Approve button. Typed text is never an answer.
@@ -452,9 +547,11 @@ What to know:
   the Bot API documents.
 - **The preview leaves your machine.** It passes through Telegram to your phone, and anyone who can read
   that chat can read it.
-- **A narrow phone wraps the preview's 78-character lines.** On the iPhone in that trial, a line longer
-  than about 37 characters wrapped. A wrapped line can then begin with text from inside a value, where the
-  preview's own marks would be. Not fixed.
+- **A narrow phone wraps the preview's 78-character lines, unless you set the width.** On the iPhone in
+  that trial, a line longer than about 37 characters wrapped. A wrapped line can then begin with text from
+  inside a value, where the preview's own marks would be. Make the checkpoint with `preview_width` set to
+  what your phone shows (see "A narrower screen" above) and no line in the box is longer than that. The
+  tests check this against the pretend Telegram. It has not been tried on a real phone yet.
 - **The token is the key to your bot.** Your code reads it and hands it over. The approver never puts it in
   an error, in `repr()` or in anything it prints, and does not send it on if the address redirects. Give the
   bot no other job: two programs cannot listen on one bot.
@@ -639,31 +736,34 @@ a comparison with the approval steps built into agent frameworks.
 
 ## What has been checked
 
-All of this uses no model and costs nothing. Measured on 2026-11-17, on macOS, on the code of
-release 0.2.0. Where a row was measured earlier, on the 0.1.0 code, it says so.
+All of this uses no model and costs nothing. Measured on 2026-11-17, on macOS, on the code as it is
+here, which is newer than release 0.2.0 (see "A narrower screen" above). Where a row was measured on
+the 0.2.0 or the 0.1.0 code, it says so.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| The tests | `.venv/bin/pytest` | 1059 passed on Python 3.14.8, with both extras installed (`claude` and `openai`). Not measured again on other versions or with no extras. For 0.1.0, on 2026-11-15: 604 passed on 3.14.8 and 3.15.2; on 3.11.18, 603 passed and 1 was skipped (it needs 3.14); with neither extra, on 3.15.2, 598 passed and 6 were skipped. |
+| The tests | `.venv/bin/pytest` | 5227 passed on Python 3.14.8 on 2026-11-18, with both extras installed (`claude` and `openai`). Not measured again on other versions or with no extras. On 2026-11-17, before the ready-made rules were added: 1119. For 0.2.0, on 2026-11-17: 1059 passed on 3.14.8. For 0.1.0, on 2026-11-15: 604 passed on 3.14.8 and 3.15.2; on 3.11.18, 603 passed and 1 was skipped (it needs 3.14); with neither extra, on 3.15.2, 598 passed and 6 were skipped. |
 | The attack test's check of itself | `.venv/bin/python -m kettle.attacktest --self-check` | 8 of 8 checks held, on each of the two case sets (add `--cases fraud` for the second) |
-| Checkpoint and source trail broken on purpose | `.venv/bin/python checks/break_checkpoint.py` | 216 breaks tried, 216 caught by the tests |
+| Checkpoint and source trail broken on purpose | `.venv/bin/python checks/break_checkpoint.py` | 277 breaks tried, 277 caught by the tests |
 | Attack test broken on purpose | `.venv/bin/python checks/break_attacktest.py` | 107 breaks tried, 106 caught, 1 known and explained |
 | Adapters broken on purpose | `.venv/bin/python checks/break_adapters.py` | 43 breaks tried, 43 caught by the tests |
-| Telegram approver broken on purpose | `.venv/bin/python checks/break_telegram.py` | 197 breaks tried, 197 caught by the tests |
+| Telegram approver broken on purpose | `.venv/bin/python checks/break_telegram.py` | 198 breaks tried, 198 caught by the tests |
 | Attacks on the yes | `.venv/bin/python -m kettle.attacktest --yes-set` | 25 tried: 23 stopped, 2 got through, both known limits (named above) |
 | Attacks on the yes broken on purpose | `.venv/bin/python checks/break_yes_set.py` | 65 breaks tried, 65 caught by the tests |
 | Browser demo broken on purpose | `.venv/bin/python checks/break_demo.py` | 43 breaks tried, 43 caught by the tests |
 | Receipts broken on purpose | `.venv/bin/python checks/break_verify.py` | 51 breaks tried, 51 caught by the tests |
 | Source trail over the saved runs | `.venv/bin/python checks/trail_over_saved_runs.py` | 170 of 170 runs saved on 15 November played again. Of the held actions, 31 of 31 aimed at the attacker and 55 of 55 others traced to an earlier call, and none had no source found |
-| Previews read back | `.venv/bin/python checks/read_back.py` | 150,000 random records, 0 read back wrongly, no two different records sharing a preview |
+| Previews read back | `.venv/bin/python checks/read_back.py` | 150,000 random records, each written at 78 and again at one narrower width (32 to 77, picked at random): 0 read back wrongly, no line longer than its width, no two different records sharing a preview |
 | The built package | see [RELEASING.md](https://github.com/engineerjames44/kettle-core/blob/main/RELEASING.md) | For 0.2.0, on 2026-11-17: the wheel and the source archive build from a clean copy of the committed files, and the wheel installed by itself into an empty environment on Python 3.11.18, 3.14.8 and 3.15.2 passes the self-check on both case sets and gives the same 25 tried, 23 stopped on the attacks on the yes. After the upload the same evening, `pip install kettle-labs==0.2.0` from PyPI into an empty environment on the same three Python versions passed the same checks with the same counts. For 0.1.0, on 2026-11-16, `pip install kettle-labs` from PyPI into an empty environment on Python 3.14.8 passed the two self-checks |
 
-- **The tests.** 380 are for the checkpoint, 301 for the attack test, 64 for the adapters, 205 for the
-  Telegram approver, 39 for the attacks on the yes, 25 for the browser demo and 30 for the receipts. 8 run
+- **The tests.** 4108 are for the ready-made rules in `src/kettle/rules.py`, the hold in `src/kettle/holds.py` and
+  the commands that check the attack test's own numbers, all new since 0.2.0 and not described in this README yet.
+  Of the rest, 433 are for the checkpoint, 301 for the attack test, 64 for the adapters, 211 for the
+  Telegram approver, 39 for the attacks on the yes, 25 for the browser demo and 31 for the receipts. 8 run
   the examples and 7 check that the tests stay on this machine. Of the checkpoint's, the 102 in
   `tests/test_fixed_ways_around.py` are the ones that try a way around it (a changed action, a reused or
   expired yes, a broken store, and so on), the 44 in `tests/test_first_time.py` are for the first-time
-  mark and the 148 in `tests/test_trail.py` are for the source trail. Most of them pass or fail on what the
+  mark and the 152 in `tests/test_trail.py` are for the source trail. Most of them pass or fail on what the
   tools themselves wrote down as run, not on what the checkpoint says. The rest are ordinary tests of the
   record, the preview, the log and shared stores.
 - **The Telegram tests use a pretend Telegram on this machine.** No test can reach the real one. The real
@@ -679,6 +779,6 @@ release 0.2.0. Where a row was measured earlier, on the 0.1.0 code, it says so.
   one break that is not caught removes the second of two checks the stand-in owner makes on an action; the
   first still refuses, so nothing changes that a test could see.
 - **Not tried at all:** the OpenAI agent against OpenAI's real API, a built package with the newer code in
-  it, and the question in the terminal on Windows or Linux.
+  it, a narrower preview on a real phone, and the question in the terminal on Windows or Linux.
 - These checks show the code does what its tests say. They were written alongside the code, and nobody
   independent has reviewed it.

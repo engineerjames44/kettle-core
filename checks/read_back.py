@@ -9,6 +9,10 @@ it was written from. Two different records must never share a preview.
 
 Each record is also written a second time with first-time marks on some inputs,
 chosen at random. The marks must not change what is read back.
+
+And a third time, marks and all, at a width chosen at random from the narrower ones
+a checkpoint can be set to (preview_width). No line may be longer than that width,
+and the same record must be read back.
 """
 
 import pathlib
@@ -21,7 +25,7 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests")]
 
 import test_record_and_preview as reader  # noqa: E402
 
-from kettle.checkpoint.record import ActionRecord  # noqa: E402
+from kettle.checkpoint.record import MIN_PREVIEW_WIDTH, PREVIEW_WIDTH, ActionRecord  # noqa: E402
 
 SEEDS, EACH = 60, 2500
 
@@ -30,6 +34,7 @@ def main():
     start, wrong, seen = time.time(), 0, {}
     for seed in range(SEEDS):
         rng = random.Random(seed)
+        widths = random.Random(f"width {seed}")  # its own dice, so the records are the same ones as before
         for number in range(EACH):
             tool = reader._tricky_text(rng, 3) or "tool"
             actor = rng.choice([None, reader._tricky_text(rng, 3)])
@@ -50,6 +55,15 @@ def main():
                 found = reader.read_back(record.preview(summary, marks))
                 assert found["summary"] == summary, "the summary read back differently with marks"
                 assert ActionRecord.make(found["tool"], found["inputs"], found["actor"]) == record, "a different record was read back with marks"
+            except AssertionError as error:
+                wrong += 1
+                print(f"WRONG  seed {seed}, record {number}: {error}")
+            width = widths.randrange(MIN_PREVIEW_WIDTH, PREVIEW_WIDTH)
+            try:
+                found = reader.read_back(record.preview(summary, marks, width=width), width)
+                assert found["summary"] == summary, f"the summary read back differently at width {width}"
+                assert ActionRecord.make(found["tool"], found["inputs"], found["actor"]) == record, f"a different record was read back at width {width}"
+                assert found["fingerprint"] == record.fingerprint, f"the fingerprint read back differently at width {width}"
             except AssertionError as error:
                 wrong += 1
                 print(f"WRONG  seed {seed}, record {number}: {error}")

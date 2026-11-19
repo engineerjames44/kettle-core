@@ -4,6 +4,7 @@ As everywhere, a test passes or fails on what the World saw, not on what anyone 
 """
 
 import os
+import pathlib
 import re
 import sqlite3
 import subprocess
@@ -14,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from kettle import NEEDS_YES
+from kettle import NEEDS_YES, Checkpoint
 from kettle.adapters import SAID_NO, through
 from kettle.attacktest.pretend_telegram import DATA_LIMIT, MESSAGE_LIMIT, PretendTelegram
 from kettle.checkpoint.record import ActionRecord
@@ -46,6 +47,7 @@ from kettle.telegram import (
 )
 
 from conftest import EMAIL
+from test_record_and_preview import read_back
 
 OWNER = 424242
 SOMEONE_ELSE = 515151
@@ -75,6 +77,7 @@ class Tick:
 @pytest.fixture
 def telegram():
     with PretendTelegram() as pretend:
+        pretend.approvers = []  # the approvers a test has made, so that on_screen can wait for them
         yield pretend
 
 
@@ -90,6 +93,7 @@ def phone(cp, telegram):
         approver = TelegramApprover(cp, problem=problems.append, **wanted)
         approver.problems = problems
         made.append(approver)
+        telegram.approvers.append(approver)
         if start:
             approver.start()
         return approver
@@ -101,9 +105,26 @@ def phone(cp, telegram):
 
 
 def on_screen(telegram, count=1):
-    """The messages with buttons, once there are `count` of them."""
+    """The messages with buttons, once there are `count` of them and their approvers know they are out."""
     assert until(lambda: len(telegram.with_buttons()) >= count), f"{len(telegram.with_buttons())} messages with buttons, wanted {count}"
+    told(telegram)
     return telegram.with_buttons()
+
+
+def told(telegram):
+    """Wait until each approver has heard back about every message it has put buttons on.
+
+    Telegram has a message a moment before the approver that sent it hears so. A press in
+    that moment is answered "too soon" and changes nothing, so a test that pressed there
+    would wait for an answer that never comes. At most 2 seconds: a test may have an
+    approver whose messages cannot get out.
+    """
+
+    def heard(approver):
+        with approver._lock:
+            return all(shown.buttons_message is not None for shown in approver._shown.values())
+
+    return until(lambda: all(heard(approver) for approver in telegram.approvers), 2.0)
 
 
 def buttons(message):
@@ -151,6 +172,30 @@ def test_the_message_holds_the_preview_exactly_as_the_checkpoint_made_it(cp, hel
     (call,) = telegram.made("sendMessage")
     assert "parse_mode" not in call  # nothing in a value can be read as markup
     assert call["link_preview_options"] == {"is_disabled": True}
+
+
+def test_a_checkpoint_set_to_the_width_of_a_phone_sends_a_box_with_no_line_longer_than_that(db_path, world, clock, telegram):
+    """At the usual width a phone wraps most lines of the box, and the wrapped part looks like a line of its own."""
+    narrow = Checkpoint(db_path, hold_seconds=600, clock=clock, preview_width=38)
+    narrow.tool("send_email", world.send_email, level=NEEDS_YES, watch=["to"], describe=lambda inputs: f"Send an email to {inputs['to']}: {inputs['body']}")
+    inputs = {"to": "sam.jones@example.com", "body": "Hi Sam, see you Saturday at the match. Bring the jerseys and the cones if you can."}
+    held = narrow.request("send_email", dict(inputs))
+    approver = TelegramApprover(narrow, token=telegram.token, chat_id=OWNER, api=telegram.api, min_read_seconds=0, poll_seconds=0.02, long_poll_seconds=1, retry_seconds=0.02)
+    telegram.approvers.append(approver)
+    approver.start()
+    try:
+        (message,) = on_screen(telegram)
+        box = shown_preview(message)
+        assert box == held.preview and max(len(line) for line in box.split("\n")) == 38
+        found = read_back(box, 38)  # the reader refuses a line longer than 38
+        assert found["inputs"] == inputs and found["fingerprint"] == held.fingerprint
+        assert telegram.answer_to(telegram.press(message["message_id"], "Approve"))["text"].startswith("Approved")
+        assert narrow.run(held.request_id).status == "ran"
+        assert world.ran == [("send_email", inputs)]
+    finally:
+        telegram.close()
+        approver.stop()
+        narrow.close()
 
 
 def test_the_headline_is_bold_and_the_line_on_what_approve_does_is_italic(cp, held, telegram, phone):
@@ -364,6 +409,85 @@ def test_after_the_answer_the_buttons_are_taken_off_and_the_action_is_named(cp, 
     last = telegram.messages[-1]["text"]
     assert last.startswith("Approved") and "send_email" in last and held.fingerprint[:12] in last
     assert held.fingerprint not in last and not telegram.messages[-1]["reply_markup"]
+
+
+# ---- an app that cannot wait --------------------------------------------------------
+
+README = pathlib.Path(__file__).resolve().parent.parent / "README.md"
+
+
+def the_readme_way(cp, approver):
+    """The lines the README gives for an app that cannot wait, run as they stand there."""
+    text = README.read_text(encoding="utf-8")
+    code = text[text.index("If your app cannot wait") :].split("```python\n", 1)[1].split("```", 1)[0]
+    names = {"cp": cp, "approver": approver}
+    exec(code, names)
+    return names["ask"], names["answers"], names["waiting"]
+
+
+def test_the_readme_way_asks_at_once_and_a_yes_runs_the_action_once(cp, world, telegram, phone):
+    approver = phone(start=False)
+    ask, answers, waiting = the_readme_way(cp, approver)
+    assert "running" in repr(approver)  # its first line started the approver
+    held = ask("send_email", dict(EMAIL))
+    assert held.status == "held" and waiting == [held.request_id]  # it came back, with nothing pressed
+    assert answers() == [] and world.risky() == []
+    assert ask("read_note", {}).status == "ran" and waiting == [held.request_id]  # the app's loop goes on meanwhile
+    (message,) = on_screen(telegram)
+    assert shown_preview(message) == held.preview
+    assert answers() == [] and world.risky() == []  # on the phone is not answered
+    assert telegram.answer_to(telegram.press(message["message_id"], "Approve"))["text"].startswith("Approved")
+    ((request_id, said, done),) = answers()
+    assert (request_id, said, done.status, done.result) == (held.request_id, "approved", "ran", "sent")
+    assert world.risky() == [("send_email", EMAIL)]
+    assert answers() == [] and waiting == []  # each answer is handed over once
+    assert cp.run(held.request_id).status == "refused" and world.risky() == [("send_email", EMAIL)]
+    assert not hasattr(cp.gate, "run") and not hasattr(cp.gate, "status")  # the gate the model is given can only ask
+
+
+def test_the_readme_way_runs_nothing_after_a_deny(cp, world, telegram, phone):
+    ask, answers, waiting = the_readme_way(cp, phone(start=False))
+    held = ask("send_email", dict(EMAIL))
+    (message,) = on_screen(telegram)
+    assert telegram.answer_to(telegram.press(message["message_id"], "Deny"))["text"].startswith("Denied")
+    assert answers() == [(held.request_id, "denied", None)]
+    assert answers() == [] and waiting == []
+    assert cp.run(held.request_id).status == "refused" and world.risky() == []
+
+
+def test_the_readme_way_runs_nothing_when_no_answer_comes_in_time(cp, world, clock, telegram, phone):
+    ask, answers, waiting = the_readme_way(cp, phone(start=False))
+    held = ask("send_email", dict(EMAIL))
+    (message,) = on_screen(telegram)
+    clock.forward(599)
+    assert answers() == []
+    clock.forward(2)
+    assert answers() == [(held.request_id, "expired", None)] and waiting == []
+    late = telegram.answer_to(telegram.press(message["message_id"], "Approve"))["text"]
+    assert late in (NOT_OPEN, "Refused: that request has expired.")  # a late press is not a yes, whichever of the two hears it first
+    assert answers() == [] and cp.run(held.request_id).status == "refused" and world.risky() == []
+
+
+def test_the_readme_way_keeps_waiting_for_the_one_that_has_no_answer_yet(cp, world, telegram, phone):
+    ask, answers, waiting = the_readme_way(cp, phone(start=False))
+    email, payment = ask("send_email", dict(EMAIL)), ask("pay", {"to": "ACME-1", "amount": 5})
+    first, second = on_screen(telegram, 2)
+    for_payment = first if shown_preview(first) == payment.preview else second
+    assert telegram.answer_to(telegram.press(for_payment["message_id"], "Approve")) is not None
+    ((request_id, said, done),) = answers()
+    assert (request_id, said, done.result) == (payment.request_id, "approved", "paid")
+    assert waiting == [email.request_id] and world.risky() == [("pay", {"to": "ACME-1", "amount": 5})]
+    assert answers() == []
+
+
+def test_a_held_action_is_not_sent_until_the_approver_is_started(cp, world, telegram, phone):
+    approver = phone(start=False)
+    held = cp.gate.request("send_email", dict(EMAIL))
+    time.sleep(0.2)
+    assert telegram.made("sendMessage") == [] and state(cp, held.request_id) == "held"
+    approver.start()
+    (message,) = on_screen(telegram)
+    assert shown_preview(message) == held.preview
 
 
 # ---- presses that must not count ---------------------------------------------------
@@ -893,6 +1017,7 @@ def test_a_problem_report_that_itself_fails_does_not_stop_the_approver(cp, held,
 
     telegram.fail(2, "sendMessage")
     approver = TelegramApprover(cp, token=telegram.token, chat_id=OWNER, api=telegram.api, min_read_seconds=0, poll_seconds=0.02, long_poll_seconds=1, retry_seconds=0.02, problem=broken)
+    telegram.approvers.append(approver)
     approver.start()
     try:
         (message,) = on_screen(telegram)
@@ -989,6 +1114,7 @@ def test_starting_again_does_not_bring_old_buttons_back_to_life(cp, held, world,
     assert state(cp, held.request_id) == "held"
     new = until(lambda: [message for message in telegram.with_buttons() if message["message_id"] != old["message_id"]])
     assert new and not set(buttons(new[0]).values()) & set(old_buttons.values())
+    told(telegram)
     assert telegram.answer_to(telegram.press(new[0]["message_id"], "Approve"))["text"].startswith("Approved")
     assert state(cp, held.request_id) == "approved" and world.risky() == []
 

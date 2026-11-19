@@ -45,13 +45,13 @@ MUTANTS = [
     ("checkpoint: a yes is taken after the time is up", C, lambda t: _nth(t, 'if now >= row["expires_at"]:', 'if False:', 1)),
     ("checkpoint: a yes can be used after the time is up", C, lambda t: _nth(t, 'if now >= row["expires_at"]:', 'if False:', 2)),
     # the card
-    ("card: a long value is clipped, not carried on", R, rep('            lines.append(line)\n            line, count = more, 0\n', '            return lines + [line]\n')),
-    ("card: long lines are not cut", R, rep('if count and len(line) + len(piece) > room:', 'if False:')),
-    ("card: carried-on lines are not marked", R, rep('    more = indent + "+ "\n', '    more = indent + "  "\n', 'indent + "+ ", json_from=len(label))', 'indent + "  ", json_from=len(label))')),
+    ("card: a long value is clipped, not carried on", R, rep('            lines.append(line)\n            line, count = more + lead + carried, 1 if carried else 0\n', '            return lines + [line]\n')),
+    ("card: long lines are not cut", R, rep('if count and len(line) + size > room:', 'if False:')),
+    ("card: carried-on lines are not marked", R, rep('    more = indent + "+ "\n', '    more = indent + "  "\n', 'indent + "+ ", json_from=len(label), width=width)', 'indent + "  ", json_from=len(label), width=width)')),
     ("card: runs of spaces are written as they are", R, rep('out.append(" " if alone else _SPACE)', 'out.append(" ")')),
     ("card: a look-alike letter is written as itself", R, rep('            out.append(f"\\\\u{{{ord(char):04X}}}")', '            out.append(char)')),
     ("card: a look-alike letter is not named", R, rep('if not odd:', 'if True:')),
-    ("card: the lines of a block are not marked", R, rep('_fold(indent + "| ", _pieces(part, quoted=False), more)', '_fold(indent, _pieces(part, quoted=False), more)')),
+    ("card: the lines of a block are not marked", R, rep('_fold(indent + "| ", _pieces(part, quoted=False), more, words=words, width=width)', '_fold(indent, _pieces(part, quoted=False), more, words=words, width=width)')),
     # the phone
     ("phone: the text is read as markup", TG, rep('"link_preview_options": {"is_disabled": True}}', '"link_preview_options": {"is_disabled": True}, "parse_mode": "HTML"}')),
     ("phone: the preview is not sent as fixed-width text", TG, rep('"text": text, "entities": entities, "link_preview_options"', '"text": text, "link_preview_options"')),

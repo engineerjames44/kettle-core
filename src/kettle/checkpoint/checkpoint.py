@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from .record import ActionRecord, RecordError
+from .record import MIN_PREVIEW_WIDTH, PREVIEW_WIDTH, ActionRecord, RecordError
 from .rules import FREE, NEEDS_YES, NEVER, Level, Refused, Rules, Tool
 from .store import Store, StoreError
 from .trail import Trail, TrailError
@@ -79,7 +79,15 @@ class Decision:
 
 
 class Checkpoint:
-    def __init__(self, path: str, *, hold_seconds: float = 600.0, clock: Callable[[], float] = time.time, trail: bool = False) -> None:
+    def __init__(
+        self,
+        path: str,
+        *,
+        hold_seconds: float = 600.0,
+        clock: Callable[[], float] = time.time,
+        trail: bool = False,
+        preview_width: int = PREVIEW_WIDTH,
+    ) -> None:
         """path is the SQLite file that holds requests and the log (":memory:" for a throwaway one).
 
         hold_seconds is how long a held request stays answerable. The yes and the
@@ -88,11 +96,18 @@ class Checkpoint:
         trail=True turns the source trail on: this object keeps, in memory, what
         every call returned, and a held action's preview says where each watched
         value was seen before. See owner_said() and known().
+
+        preview_width is the longest line a preview may have, for a screen that
+        shows fewer characters on a line than the usual 78, such as a phone. A
+        line the screen has to wrap can start with text from inside a value.
         """
         if type(hold_seconds) not in (int, float) or not math.isfinite(hold_seconds) or hold_seconds <= 0:
             raise CheckpointError("hold_seconds must be a positive number")
         if type(trail) is not bool:
             raise CheckpointError("trail must be True or False")
+        if type(preview_width) is not int or not MIN_PREVIEW_WIDTH <= preview_width <= PREVIEW_WIDTH:
+            raise CheckpointError(f"preview_width must be a whole number from {MIN_PREVIEW_WIDTH} to {PREVIEW_WIDTH}")
+        self._preview_width = preview_width
         self._trail = Trail() if trail else None
         self._hold_seconds = float(hold_seconds)
         self._clock = clock
@@ -217,7 +232,7 @@ class Checkpoint:
                     expires_at = now + self._hold_seconds
                     first_time = _first_time(found, record, tx.seen)
                     trail = self._trail.trace(found.watch, record.inputs(), now) if self._trail is not None else []
-                    preview = record.preview(summary, first_time, trail)
+                    preview = record.preview(summary, first_time, trail, self._preview_width)
                     tx.insert_request(request_id, record.fingerprint, record.canonical, now, expires_at)
                     detail = {"expires_at": expires_at, "rules": self._rules.digest()}
                     if found.watch:
@@ -363,9 +378,9 @@ class Checkpoint:
             summary = self._summary(found, record)
             trail = self._held_trail(row["id"])
             try:
-                preview = record.preview(summary, first_time, trail)
+                preview = record.preview(summary, first_time, trail, self._preview_width)
             except RecordError:  # the stored trail was edited by hand; verify_log() reports it
-                trail, preview = [], record.preview(summary, first_time)
+                trail, preview = [], record.preview(summary, first_time, width=self._preview_width)
             waiting.append(
                 {
                     "request_id": row["id"],

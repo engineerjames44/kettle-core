@@ -24,6 +24,8 @@ from .trail import EMPTY, MAX_ITEMS, NOT_TEXT, TOO_MANY
 RECORD_VERSION = 1
 MAX_RECORD_BYTES = 1_000_000
 MAX_DEPTH = 32
+PREVIEW_WIDTH = 78  # no line of a preview is longer than this: see "writing the preview" below
+MIN_PREVIEW_WIDTH = 32  # the narrowest a preview can be asked for: the longest fixed words and marks still fit on a line
 _PREFIX = b"kettle-action-v1\n"
 
 
@@ -133,11 +135,17 @@ class ActionRecord:
     def actor(self) -> Optional[str]:
         return self._body()["actor"]
 
-    def preview(self, summary: Optional[str] = None, first_time: Optional[dict] = None, trail: Optional[list] = None) -> str:
+    def preview(
+        self, summary: Optional[str] = None, first_time: Optional[dict] = None, trail: Optional[list] = None, width: int = PREVIEW_WIDTH
+    ) -> str:
         """What a human is shown before saying yes. Written here, from the record.
 
-        It is plain ASCII, no line is longer than PREVIEW_WIDTH, and it can be read
-        back to exactly the record: see the notes above _pieces and _fold.
+        It is plain ASCII, no line is longer than width, and it can be read back to
+        exactly the record: see the notes above _pieces and _fold.
+
+        width is for a screen that shows fewer than PREVIEW_WIDTH characters on a
+        line, such as a phone: from MIN_PREVIEW_WIDTH to PREVIEW_WIDTH. A narrower
+        preview has more lines. It says the same and reads back to the same record.
 
         first_time names the inputs to mark as new: each name maps to None for the
         whole value, or to the numbers (from 1) of the new items in a list. The
@@ -146,31 +154,33 @@ class ActionRecord:
         trail is what Trail.trace() gave for the watched inputs: where each value
         was seen before. It is written as "!" notes too, under the input.
         """
+        if type(width) is not int or not MIN_PREVIEW_WIDTH <= width <= PREVIEW_WIDTH:
+            raise RecordError(f"the width of a preview must be a whole number from {MIN_PREVIEW_WIDTH} to {PREVIEW_WIDTH}")
         inputs = self.inputs()
-        traced, missing = _trail_lines(trail, inputs, "      ") if trail else ({}, 0)
-        marked = {key: _first_time_lines(items, "      ") for key, items in (first_time or {}).items() if key in inputs}
+        traced, missing = _trail_lines(trail, inputs, "      ", width) if trail else ({}, 0)
+        marked = {key: _first_time_lines(items, "      ", width) for key, items in (first_time or {}).items() if key in inputs}
         lines = []
         if marked:
-            lines.append(f"! {len(marked)} input{' below is' if len(marked) == 1 else 's below are'} marked first time")
+            lines += _top_note(f"{len(marked)} input{' below is' if len(marked) == 1 else 's below are'} marked first time", width)
         if missing:
-            lines.append(f"! source not found for {missing} value{'' if missing == 1 else 's'} below")
+            lines += _top_note(f"source not found for {missing} value{'' if missing == 1 else 's'} below", width)
         if summary:
-            lines += _text_lines("Summary (written by the app): ", [], summary, "  ")
-        lines += _text_lines("Action: ", [], self.tool, "  ")
+            lines += _text_lines("", ["Summary (written by the app):"], summary, "  ", words=True, width=width)
+        lines += _text_lines("", ["Action:"], self.tool, "  ", width=width)
         if self.actor is not None:
-            lines += _text_lines("Asked through (set by the app): ", [], self.actor, "  ")
+            lines += _text_lines("", ["Asked through (set by the app):"], self.actor, "  ", width=width)
         if not inputs:
             lines.append("Inputs: none")
         for key in sorted(inputs):
             label = ['"'] + _pieces(key, quoted=True) + ['"', ":"]
             value = inputs[key]
             if type(value) is str:
-                lines += _text_lines("  ", label, value, "      ", noted=key)
+                lines += _text_lines("  ", label, value, "      ", noted=key, width=width)
             else:
-                lines += _json_lines("  ", label, value, "      ", noted=key)
+                lines += _json_lines("  ", label, value, "      ", noted=key, width=width)
             lines += marked.get(key, [])
             lines += traced.get(key, [])
-        lines.append(f"Fingerprint: {self.fingerprint}")
+        lines += _fingerprint_lines(self.fingerprint, width)
         return "\n".join(lines)
 
 
@@ -184,9 +194,14 @@ class ActionRecord:
 #   - No line is longer than PREVIEW_WIDTH. A longer one is cut here, and carries on
 #     in the next line after a "+" mark, so a screen that wraps or clips long lines
 #     cannot be used to push part of a value out of sight or to the start of a line.
+#     A screen that shows fewer characters than that on a line wraps them all the
+#     same, so the preview can be asked for at the width the screen has.
+#   - The app's summary is the one thing a person reads as a sentence, so it is cut
+#     between words where it can be. The space at the cut is written out like any
+#     other space at the end of a line, so the summary still reads back exactly.
 #   - Text from inside a value only ever appears after a quote, a "|" or a "+".
 
-PREVIEW_WIDTH = 78
+WORD_LIMIT = 24  # a word longer than this is cut where the line ends, not carried down whole
 _SPACE = "\\u{0020}"
 _JSON_SPACE = "\\u0020"
 
@@ -210,8 +225,10 @@ def _pieces(text: str, quoted: bool) -> list[str]:
     return out
 
 
-def _fold(head: str, pieces: list[str], more: str, json_from: Optional[int] = None) -> list[str]:
-    """Write the pieces after head, in lines of at most PREVIEW_WIDTH characters.
+def _fold(
+    head: str, pieces: list[str], more: str, json_from: Optional[int] = None, words: bool = False, width: int = PREVIEW_WIDTH
+) -> list[str]:
+    """Write the pieces after head, in lines of at most width characters.
 
     A line that had to be cut carries on in the next one after `more`. No line ends
     with a bare space and no carried-on line starts with one: a space that would
@@ -221,26 +238,71 @@ def _fold(head: str, pieces: list[str], more: str, json_from: Optional[int] = No
     A space from inside a value is always a piece on its own. A longer piece that
     starts with a space is the gap between a label and its value, which is not part
     of either, so it is left out when the value starts on a carried-on line.
+
+    With words, a line is cut after its last single space, and the word that was
+    being written is carried down whole, if that word is WORD_LIMIT characters or
+    fewer so far and fits on the next line with the piece that comes after it. A
+    line with no such space, or a longer word, is cut where it ends.
+
+    At the usual width a line is cut len(_SPACE) characters early, which is the room
+    a space needs when it is written out at the cut. Every release so far has cut
+    there, so it stays. A narrower preview has no characters to spare, so there a
+    line is filled. A space that then has no room to be written out where the line
+    ends is written out at the start of the next line. With words, a space is only
+    put on a line that has the room, so a line cut between words ends with it. The
+    room is not needed once all that is left fits on the line.
     """
-    room = PREVIEW_WIDTH - len(_SPACE)
+    fill = width < PREVIEW_WIDTH
+    room = width if fill else width - len(_SPACE)
+    left = sum(map(len, pieces))  # how long the pieces not yet written are
     lines, line, count, last, last_space = [], head, 0, "", _SPACE
+    word_at, word_space = 0, _SPACE  # with words: where in the line the word being written starts (0: none to carry)
     for index, piece in enumerate(pieces):
         space = _SPACE if json_from is None or index < json_from else _JSON_SPACE
-        if count and len(line) + len(piece) > room:
-            if last == " ":
+        size = len(space) if fill and words and piece == " " and len(line) + left > room else len(piece)
+        left -= len(piece)
+        if count and len(line) + size > room:
+            carried, lead = "", ""
+            fits = len(more) + len(line) - word_at + size <= room  # the carried word and this piece, on the next line
+            if words and word_at and last != " " and len(line) - word_at <= WORD_LIMIT and fits:
+                carried, line, last, last_space = line[word_at:], line[:word_at], " ", word_space
+            if last == " " and len(line) - 1 + len(last_space) <= width:
                 line = line[:-1] + last_space
+            elif last == " ":
+                line, lead = line[:-1], last_space
             lines.append(line)
-            line, count = more, 0
+            line, count = more + lead + carried, 1 if carried else 0
+            word_at = 0
         if count == 0 and lines and piece[:1] == " ":
             piece = space if piece == " " else piece[1:]
         line += piece
+        if piece == " ":
+            word_at, word_space = len(line), space
         last, last_space = piece, space
         count += 1
     lines.append(line)
     return lines
 
 
-def _note_lines(text: str, indent: str) -> list[str]:
+def _top_note(text: str, width: int) -> list[str]:
+    """A note at the top of the preview, about the inputs below. The words are fixed."""
+    return textwrap.wrap(text, width=width, initial_indent="! ", subsequent_indent="! + ")
+
+
+def _fingerprint_lines(fingerprint: str, width: int) -> list[str]:
+    """The last line. On a narrow preview the fingerprint is cut into rows of the same length, so it can be compared row by row."""
+    whole = f"Fingerprint: {fingerprint}"
+    if len(whole) <= width:
+        return [whole]
+    more = "  + "
+    rows = -(-len(fingerprint) // (width - len(more)))
+    while len(fingerprint) % rows:
+        rows += 1
+    size = len(fingerprint) // rows
+    return ["Fingerprint:"] + [more + fingerprint[at : at + size] for at in range(0, len(fingerprint), size)]
+
+
+def _note_lines(text: str, indent: str, width: int = PREVIEW_WIDTH) -> list[str]:
     """Name the first few characters that are not plain ASCII, since some look exactly like ones that are."""
     odd = {char: None for char in text if ord(char) > 127}
     if not odd:
@@ -248,7 +310,7 @@ def _note_lines(text: str, indent: str) -> list[str]:
     named = [f"U+{ord(char):04X} {unicodedata.name(char, 'unnamed')}" for char in list(odd)[:4]]
     more = f", and {len(odd) - 4} more" if len(odd) > 4 else ""
     mark = indent + "! "
-    return textwrap.wrap("not plain ASCII: " + ", ".join(named) + more, width=PREVIEW_WIDTH, initial_indent=mark, subsequent_indent=mark)
+    return textwrap.wrap("not plain ASCII: " + ", ".join(named) + more, width=width, initial_indent=mark, subsequent_indent=mark)
 
 
 def _in_runs(items: list) -> str:
@@ -262,7 +324,7 @@ def _in_runs(items: list) -> str:
     return ", ".join(str(first) if first == last else f"{first}, {last}" if last == first + 1 else f"{first} to {last}" for first, last in runs)
 
 
-def _first_time_lines(items: Optional[list], indent: str) -> list[str]:
+def _first_time_lines(items: Optional[list], indent: str, width: int = PREVIEW_WIDTH) -> list[str]:
     """The note under an input whose value, or some items of it, no approved action has run with before."""
     if items is None:
         what = "this value"
@@ -272,7 +334,7 @@ def _first_time_lines(items: Optional[list], indent: str) -> list[str]:
         what = ("item " if len(items) == 1 else "items ") + _in_runs(items)
     mark = indent + "! "
     text = f"first time: no approved action has run with {what} before"
-    return textwrap.wrap(text, width=PREVIEW_WIDTH, initial_indent=mark, subsequent_indent=mark)
+    return textwrap.wrap(text, width=width, initial_indent=mark, subsequent_indent=mark)
 
 
 def _age(seconds: float) -> str:
@@ -290,7 +352,7 @@ _NOT_TRACED = {
 }
 
 
-def _trail_lines(trail: Any, inputs: dict, indent: str) -> tuple[dict, int]:
+def _trail_lines(trail: Any, inputs: dict, indent: str, width: int = PREVIEW_WIDTH) -> tuple[dict, int]:
     """The notes under each watched input that say where its value was seen before.
 
     Returns the lines for each input, and how many values no source was found for.
@@ -322,7 +384,7 @@ def _trail_lines(trail: Any, inputs: dict, indent: str) -> tuple[dict, int]:
             who = "source: " if item is None else f"source, item {item}: "
 
             def say(text: str) -> None:
-                lines.extend(textwrap.wrap(who + text, width=PREVIEW_WIDTH, initial_indent=mark, subsequent_indent=more))
+                lines.extend(textwrap.wrap(who + text, width=width, initial_indent=mark, subsequent_indent=more))
 
             if "not_traced" in entry:
                 say(_NOT_TRACED[entry["not_traced"]])
@@ -354,14 +416,21 @@ def _trail_lines(trail: Any, inputs: dict, indent: str) -> tuple[dict, int]:
         # Calls that count as a source come first, so if no call named here does, none of the rest does.
         if all(given or used for _, _, _, given, used in calls) and typed is not True and not any(listed for _, listed in lists):
             missing += 1
-            lines.append(mark + "source not found for " + ("this value" if item is None else f"item {item}"))
+            not_found = "source not found for " + ("this value" if item is None else f"item {item}")
+            lines.extend(textwrap.wrap(not_found, width=width, initial_indent=mark, subsequent_indent=more))
         for name, listed in lists:
-            lines += _fold(mark + who + ("in" if listed else "not in") + " the app's list ", ['"'] + _pieces(name, quoted=True) + ['"'], more)
+            head = mark + who + ("in" if listed else "not in") + " the app's list "
+            written = ['"'] + _pieces(name, quoted=True) + ['"']
+            if width < PREVIEW_WIDTH and len(head) + sum(map(len, written)) > width:
+                # On a narrow preview, a name that does not fit beside these words starts on a line of its own.
+                say(("in" if listed else "not in") + " the app's list:")
+                head = mark + "list: "
+            lines += _fold(head, written, more, width=width)
         if typed is not None:
             say("the owner typed it" if typed else "the owner did not type it")
         for tool, label, age, given, used in calls:
             say("returned by this earlier call" + ("" if age is None else f", {_age(age)} before") + ":")
-            lines += _fold(mark + "call: ", _pieces(tool, quoted=False) + ([" "] if label else []) + _pieces(label, quoted=False), more)
+            lines += _fold(mark + "call: ", _pieces(tool, quoted=False) + ([" "] if label else []) + _pieces(label, quoted=False), more, width=width)
             if given:
                 say("that call was handed it in its own inputs, so it is no source")
             elif used and not unsure:
@@ -377,21 +446,26 @@ def _trail_lines(trail: Any, inputs: dict, indent: str) -> tuple[dict, int]:
     return out, missing
 
 
-def _text_lines(head: str, label: list[str], text: str, indent: str, noted: str = "") -> list[str]:
+def _text_lines(head: str, label: list[str], text: str, indent: str, noted: str = "", words: bool = False, width: int = PREVIEW_WIDTH) -> list[str]:
     """One-line text in quotes; text with line breaks as a block, one "|" line for each line of it."""
     more = indent + "+ "
     gap = " " if label else ""
     if "\n" not in text:
-        lines = _fold(head, label + [gap + '"'] + _pieces(text, quoted=True) + ['"'], more)
+        value = ['"'] + _pieces(text, quoted=True) + ['"']
+        if words and width < PREVIEW_WIDTH and len(head) + sum(map(len, label)) + len(gap) + sum(map(len, value)) > width:
+            # On a narrow preview, a summary that does not fit beside its heading starts on a line of its own.
+            lines = [head + "".join(label)] + _fold(more, value, more, words=True, width=width)
+        else:
+            lines = _fold(head, label + [gap + value[0]] + value[1:], more, words=words, width=width)
     else:
         parts = text.split("\n")
-        lines = _fold(head, label + [f"{gap}[{len(parts)} lines]"], more)
+        lines = _fold(head, label + [f"{gap}[{len(parts)} lines]"], more, width=width)
         for part in parts:
-            lines += _fold(indent + "| ", _pieces(part, quoted=False), more) if part else [indent + "|"]
-    return lines + _note_lines(noted + text, indent)
+            lines += _fold(indent + "| ", _pieces(part, quoted=False), more, words=words, width=width) if part else [indent + "|"]
+    return lines + _note_lines(noted + text, indent, width)
 
 
-def _json_lines(head: str, label: list[str], value: Any, indent: str, noted: str = "") -> list[str]:
+def _json_lines(head: str, label: list[str], value: Any, indent: str, noted: str = "", width: int = PREVIEW_WIDTH) -> list[str]:
     """A value that is not text, written as JSON on one (folded) line.
 
     With no spaces between its parts, every space in the JSON is inside a string,
@@ -413,5 +487,5 @@ def _json_lines(head: str, label: list[str], value: Any, indent: str, noted: str
             pieces.append(char)
         index += 1
     pieces[0] = " " + pieces[0]
-    lines = _fold(head, label + pieces, indent + "+ ", json_from=len(label))
-    return lines + _note_lines(noted + json.dumps(value, ensure_ascii=False), indent)
+    lines = _fold(head, label + pieces, indent + "+ ", json_from=len(label), width=width)
+    return lines + _note_lines(noted + json.dumps(value, ensure_ascii=False), indent, width)
