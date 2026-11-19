@@ -7,10 +7,14 @@ Two things for people who build AI agents, both free and open source (Apache-2.0
 2. **The attack test.** Believable trick text is planted where your agent reads (an email, a web page, a file,
    a calendar invite). The report counts what the model went along with and what actually got through.
 
-**Status: early.** This is version 0.2.0. The package is on PyPI as
+**Status: early.** This is version 0.2.1. The package is on PyPI as
 [`kettle-labs`](https://pypi.org/project/kettle-labs/). The interfaces will change. The attack test has had
 one day of runs on two real models, by us: see "What we have measured so far" below and [RESULTS.md](https://github.com/engineerjames44/kettle-core/blob/main/RESULTS.md).
 Everything in "What has been checked" below can be run again from this folder, and says when it was measured.
+
+**New in 0.2.1:** a narrower preview for phone screens (`preview_width`, see "A narrower screen"), and the
+app's summary cut between words. At the usual width every preview is the same as in 0.2.0. The package also
+carries the ready-made rules (`kettle.rules`, `kettle.holds`), which are early and not described here yet.
 
 **New in 0.2.0:** the source trail, a yes from your phone over Telegram, the attacks on the yes itself
 (`--yes-set`), the browser demo (`python -m kettle.demo`) and receipts (`python -m kettle.verify`). Release
@@ -318,7 +322,8 @@ What this costs, and what it does not catch:
 
 #### A narrower screen
 
-*Newer than release 0.2.0. Not tried on a real phone yet: the tests run it against a pretend Telegram.*
+*New in 0.2.1. The tests run it against a pretend Telegram. On a real phone it was tried by hand once, on
+2026-11-18: held emails shown at width 36 on one iPhone and answered there.*
 
 A phone shows fewer than 78 characters on a line. When the screen wraps a line, the piece that is pushed
 down starts with text from inside a value, with none of the preview's own marks in front of it. So the
@@ -551,7 +556,8 @@ What to know:
   that trial, a line longer than about 37 characters wrapped. A wrapped line can then begin with text from
   inside a value, where the preview's own marks would be. Make the checkpoint with `preview_width` set to
   what your phone shows (see "A narrower screen" above) and no line in the box is longer than that. The
-  tests check this against the pretend Telegram. It has not been tried on a real phone yet.
+  tests check this against the pretend Telegram. On a real phone it was tried by hand once, on 2026-11-18,
+  at width 36.
 - **The token is the key to your bot.** Your code reads it and hands it over. The approver never puts it in
   an error, in `repr()` or in anything it prints, and does not send it on if the address redirects. Give the
   bot no other job: two programs cannot listen on one bot.
@@ -736,8 +742,8 @@ a comparison with the approval steps built into agent frameworks.
 
 ## What has been checked
 
-All of this uses no model and costs nothing. Measured on 2026-11-17 and 2026-11-18, on macOS, on the code as it is
-here, which is newer than release 0.2.0 (see "A narrower screen" above). Where a row was measured on
+All of this uses no model and costs nothing. Measured on 2026-11-17 and 2026-11-18, on macOS, on the source code of
+release 0.2.1 in this folder, not on a built package (that row says which release it was measured on). Where a row was measured on
 the 0.2.0 or the 0.1.0 code, it says so.
 
 | Check | Command | Result |
@@ -779,7 +785,8 @@ the 0.2.0 or the 0.1.0 code, it says so.
   twice", and the tests are run against the copy. A break the tests do not notice is a hole in the tests. The
   one break that is not caught removes the second of two checks the stand-in owner makes on an action; the
   first still refuses, so nothing changes that a test could see.
-- **Not tried at all:** the OpenAI agent against OpenAI's real API, a built package with the newer code in
-  it, a narrower preview on a real phone, and the question in the terminal on Windows or Linux.
+- **Not tried at all:** the OpenAI agent against OpenAI's real API, a built package of 0.2.1 (the row above
+  is still 0.2.0's), and the question in the terminal on Windows or Linux. A narrower preview was tried on a
+  real phone by hand once: see "A narrower screen".
 - These checks show the code does what its tests say. They were written alongside the code, and nobody
   independent has reviewed it.
