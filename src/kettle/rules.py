@@ -43,6 +43,7 @@ that holds an action until the owner says yes.
 
 from __future__ import annotations
 
+import glob
 import hashlib
 import ipaddress
 import json
@@ -1462,11 +1463,16 @@ class _Shell(Rule):
     kind = "shell"
     _fine = "every part of the command only reads, or is a command you allow"
 
-    def __init__(self, allowed, ignored, fields) -> None:
+    def __init__(self, allowed, ignored, fields, folders=None, base=None) -> None:
         object.__setattr__(self, "_allowed", allowed)
         object.__setattr__(self, "_ignored", ignored)
         object.__setattr__(self, "_fields", fields)
-        super().__init__({"allow": sorted(list(entry) for entry in allowed), "ignore": sorted(ignored), "fields": fields})
+        object.__setattr__(self, "_folders", folders)
+        object.__setattr__(self, "_base", base)
+        settings = {"allow": sorted(list(entry) for entry in allowed), "ignore": sorted(ignored), "fields": fields}
+        if folders is not None:
+            settings.update({"folders": list(folders), "base": base})
+        super().__init__(settings)
 
     def _look(self, inputs: dict) -> list:
         found = []
@@ -1490,16 +1496,80 @@ class _Shell(Rule):
         if _FORK_BOMB.search(re.sub(r"\s", "", " ".join(texts))):
             found.append((NEVER, _BOMB))
         before = ""
+        here = self._base
         for join, words, where in _steps(parts):
             found += _wipes(words, where)
             # A part cut off by a bracket or a backtick is read for wipes alone: what it is cannot be told, and the line asks as it is.
             if join != "(" and not self._listed(words):
                 found += [(NEEDS_YES, reason) for reason in _part_asks(words, where, piped=join == "|" and before in _FETCHERS)]
+                if self._folders is not None and _reader(words[0].text, [word.text for word in words[1:]]) is not None:
+                    found += [(NEEDS_YES, reason) for reason in self._outside(words[1:], here)]
             before = words[0].text.rsplit("/", 1)[-1]
+            if self._folders is not None and words[0].text == "cd":
+                here = _moved(words, here)
         return found
+
+    def _outside(self, words: list, here: Optional[str]) -> list:
+        """With folders: why a command that only reads still asks, because of where it reads."""
+        home = os.path.expanduser("~")
+        if here is None:
+            return ["it runs after a cd the rule cannot follow, so where it reads cannot be told"]
+        reasons = []
+        places, named = [], 0
+        for word in words:
+            text = word.text
+            if text.startswith("-"):
+                text = text.partition("=")[2] if "=" in text else ""
+            if not text:
+                continue
+            named += 1
+            looks = [text]
+            if word.pattern:
+                # What a pattern fits: the folder it starts in, and each name it fits now, links followed.
+                # The shell fits it again when it runs; a name made in between is the known short window.
+                pieces = text.split("/")
+                first = next((at for at, piece in enumerate(pieces) if any(mark in piece for mark in "*?[")), len(pieces) - 1)
+                start = "/".join(pieces[:first]) or ("/" if text.startswith("/") else ".")
+                full = os.path.expanduser(text) if text.startswith("~") else text
+                full = full if full.startswith("/") else os.path.join(here, full)
+                cut = full.split("/")
+                skip = len(cut) - len(pieces)
+                fits = []  # each step of the path from the first pattern on: ou*/x can only go where ou* fits
+                for end in range(skip + first + 1, len(cut) + 1):
+                    fits += glob.glob("/".join(cut[:end]))
+                looks = [start] + fits[:_MAX_FITS] + ([os.sep] if len(fits) > _MAX_FITS else [])
+            for look in looks:
+                whole = _whole_path(os.path.expanduser(look) if look.startswith("~") else look, home)
+                real = _real(whole if whole is not None else os.path.join(here, look))
+                if not _under(real, self._folders, exact=True) and real not in places:
+                    places.append(real)
+        if places:
+            more = f" (and {len(places) - 1} more)" if len(places) > 1 else ""
+            reasons.append(f"it reads outside the folders you allow: {_shown_place(places[0], home)}{more}")
+        # A command given no path reads where it runs (ls, find, grep -r); one given paths reads those, checked above.
+        if not named and not _under(here, self._folders, exact=True):
+            reasons.append(f"it runs in a folder outside the ones you allow: {_shown_place(here, home)}")
+        return reasons
 
     def _listed(self, words: list) -> bool:
         return any(len(entry) <= len(words) and all(not word.pattern and word.text == told for word, told in zip(words, entry)) for entry in self._allowed)
+
+
+_MAX_FITS = 1000  # past this many names a pattern is taken to fit anything
+
+
+def _moved(words: list, here: Optional[str]) -> Optional[str]:
+    """The folder after a cd, as a real path. None when it cannot be told."""
+    home = os.path.expanduser("~")
+    if len(words) == 1:
+        return _real(home)
+    if len(words) != 2 or words[1].pattern or words[1].text == "-":
+        return None
+    text = words[1].text
+    whole = _whole_path(os.path.expanduser(text) if text.startswith("~") else text, home)
+    if whole is None and here is None:
+        return None
+    return _real(whole if whole is not None else os.path.join(here, text))
 
 
 def _part_asks(words: list, where: Optional[tuple], piped: bool) -> list:
@@ -1549,7 +1619,7 @@ def _command_list(values: Any) -> frozenset:
     return frozenset(kept)
 
 
-def shell(allow: Any = None, *, ignore: Any = (), command: str = "command") -> Rule:
+def shell(allow: Any = None, *, ignore: Any = (), command: str = "command", folders: Any = None, base: Optional[str] = None) -> Rule:
     """A rule for a tool that runs a shell command.
 
     Runs without asking only when every part of the line (the parts are what
@@ -1578,6 +1648,13 @@ def shell(allow: Any = None, *, ignore: Any = (), command: str = "command") -> R
     are kept (.env, .ssh, a .pem file) asks too. Quiet endings are fine:
     2>/dev/null, >/dev/null and 2>&1.
 
+    `folders` (with `base`, the folder the command runs in) keeps reads inside
+    those folders: a command that only reads still asks when a path it is given
+    leads outside them (links followed), or when it runs in a folder outside
+    them, after a cd or from the start. This is what the files rule does for a
+    read tool, so the shell is not a way around it. Every word given to a
+    command that only reads is taken as a path, so `echo /etc` asks too.
+
     The command may be one line of text, or a list of words if your tool starts
     the program itself with no shell. `ignore` names inputs that do not change
     what runs, such as a time limit; any other input the rule was not told about
@@ -1597,7 +1674,18 @@ def shell(allow: Any = None, *, ignore: Any = (), command: str = "command") -> R
         raise RulesError("ignore must be a list of the names of inputs")
     if command in ignore:
         raise RulesError("the input that holds the command cannot be ignored")
-    return _Shell(allowed, frozenset(ignore), fields)
+    if folders is None:
+        if base is not None:
+            raise RulesError("base is only for folders")
+        return _Shell(allowed, frozenset(ignore), fields)
+    home = _tidy(os.path.expanduser("~"))
+    if type(folders) not in (list, tuple):
+        raise RulesError("folders must be a list of paths")
+    kept = tuple(dict.fromkeys(_real(folder) for folder in _place_list(folders, "folders", home)))
+    if type(base) is not str:
+        raise RulesError("with folders, base must be the folder the command runs in, as text")
+    start = _place_list([base], "base", home, whole_allowed=True)[0]
+    return _Shell(allowed, frozenset(ignore), fields, kept, _real(start))
 
 
 # ---- files ---------------------------------------------------------------------------

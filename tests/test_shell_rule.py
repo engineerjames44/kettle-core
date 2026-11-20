@@ -1,5 +1,6 @@
 """rules.shell: which shell commands run without asking, which ask, and which are never allowed."""
 
+import os
 import pytest
 
 from kettle import rules
@@ -1469,3 +1470,112 @@ def test_a_pattern_never_stands_for_one_of_the_owners_commands():
     rule = rules.shell(allow=["pytest 'tests/*'"])
     assert rule({"command": "pytest 'tests/*'"}) == FREE
     assert rule({"command": "pytest tests/*"}) == NEEDS_YES
+
+
+# ---- folders: reads by the shell kept to the folders, as the files rule keeps a read tool ----
+
+
+@pytest.fixture
+def kept(tmp_path):
+    project = tmp_path / "project"
+    (project / "src").mkdir(parents=True)
+    (project / "README.md").write_text("hi")
+    (tmp_path / "elsewhere").mkdir()
+    (project / "out").symlink_to(tmp_path / "elsewhere")
+    return rules.shell(["pytest"], folders=[str(project)], base=str(project)), project, tmp_path
+
+
+def test_with_folders_reads_inside_run_free(kept):
+    rule, project, _ = kept
+    for command in ("ls", "ls -la src", "cat README.md", "git status", "grep -rn TODO src", "cd src && ls", "find . -name '*.py'", "echo hello", "head -n 5 README.md 2>/dev/null", f"cat {project}/README.md", "pytest -q"):
+        assert rule({"command": command}) == FREE, command
+
+
+def test_with_folders_reads_outside_ask_and_say_where(kept):
+    rule, project, tmp_path = kept
+    cases = {
+        "cat ~/.kettle/claude-code.toml": "it reads outside the folders you allow: ~/.kettle/claude-code.toml",
+        "cat ../elsewhere/x": "it reads outside the folders you allow:",
+        "cat src/../../elsewhere/x": "it reads outside the folders you allow:",
+        "cat out/x": "it reads outside the folders you allow:",  # a link inside that leads out
+        "grep -rn --file=/etc/hosts x": "it reads outside the folders you allow: /private/etc/hosts" if os.path.realpath("/etc") != "/etc" else "it reads outside the folders you allow: /etc/hosts",
+        "find ~ -name '*.toml'": "it reads outside the folders you allow: ~",
+        "cat /etc/*": "it reads outside the folders you allow:",
+    }
+    for command, words in cases.items():
+        assert rule({"command": command}) == NEEDS_YES, command
+        assert words in rule.why({"command": command}), (command, rule.why({"command": command}))
+
+
+def test_with_folders_a_cd_is_followed(kept):
+    rule, project, tmp_path = kept
+    assert rule({"command": "cd src && cat ../README.md"}) == FREE
+    assert "it runs in a folder outside the ones you allow" in rule.why({"command": "cd .. && ls"})
+    assert "it runs in a folder outside the ones you allow: ~" in rule.why({"command": "cd && ls"})
+    assert "it runs after a cd the rule cannot follow" in rule.why({"command": "cd - && ls"})
+    assert "it runs in a folder outside" in rule.why({"command": f"cd {tmp_path} && ls"})
+
+
+def test_with_folders_two_places_are_named_once_with_a_count(kept):
+    rule, _, _ = kept
+    assert "(and 1 more)" in rule.why({"command": "cat ~/a ~/b ~/a"})
+
+
+def test_with_folders_commands_that_already_ask_still_ask_for_their_own_reasons(kept):
+    rule, _, _ = kept
+    assert rule({"command": "git push"}) == NEEDS_YES and "outside" not in rule.why({"command": "git push"})
+    assert rule({"command": "rm -rf /"}) == NEVER
+
+
+def test_with_folders_a_base_outside_them_asks_for_every_read(tmp_path):
+    rule = rules.shell(folders=[str(tmp_path / "p")], base=str(tmp_path))
+    assert rule({"command": "ls"}) == NEEDS_YES and "it runs in a folder outside" in rule.why({"command": "ls"})
+
+
+def test_with_folders_the_settings_are_checked(tmp_path):
+    with pytest.raises(RulesError, match="base"):
+        rules.shell(folders=[str(tmp_path)])
+    with pytest.raises(RulesError, match="base is only for folders"):
+        rules.shell(base=str(tmp_path))
+    with pytest.raises(RulesError, match="folders must be a list"):
+        rules.shell(folders=str(tmp_path), base=str(tmp_path))
+    with pytest.raises(RulesError, match="home folder"):
+        rules.shell(folders=["~"], base=str(tmp_path))
+    with pytest.raises(RulesError, match="start from"):
+        rules.shell(folders=[str(tmp_path)], base="relative")
+    a = rules.shell(folders=[str(tmp_path)], base=str(tmp_path))
+    b = rules.shell(folders=[str(tmp_path)], base=str(tmp_path / "x"))
+    assert a.settings() != b.settings() and rules.shell().settings() != a.settings()
+
+
+def test_with_folders_a_pattern_that_fits_a_link_out_asks(kept):
+    rule, project, _ = kept
+    assert rule({"command": "cat src/*"}) == FREE
+    assert rule({"command": "cat ou*/x"}) == NEEDS_YES and "it reads outside the folders you allow:" in rule.why({"command": "cat ou*/x"})
+    assert rule({"command": "ls ~/.ke*"}) == NEEDS_YES
+
+
+def test_with_folders_a_path_named_inside_is_free_from_anywhere(tmp_path):
+    inside = tmp_path / "p"
+    inside.mkdir()
+    rule = rules.shell(folders=[str(inside)], base=str(tmp_path))
+    assert rule({"command": f"cat {inside}/README.md"}) == FREE
+    assert rule({"command": "ls"}) == NEEDS_YES
+
+
+def test_with_folders_every_word_is_looked_at(kept):
+    rule, _, _ = kept
+    assert rule({"command": "cat README.md ~/.kettle/x"}) == NEEDS_YES
+
+
+def test_with_folders_a_pattern_fitting_a_link_out_asks_even_when_nothing_below_exists_yet(kept):
+    rule, project, tmp_path = kept
+    (tmp_path / "elsewhere" / "secret.txt").write_text("s")
+    assert rule({"command": "cat ou*/secret.txt"}) == NEEDS_YES
+    assert rule({"command": "cat o?t/*"}) == NEEDS_YES
+
+
+def test_with_folders_a_pattern_that_fits_nothing_yet_is_judged_by_where_it_starts(kept):
+    rule, _, tmp_path = kept
+    assert rule({"command": f"cat {tmp_path}/elsewhere/none-yet*"}) == NEEDS_YES
+    assert rule({"command": "cat src/none-yet*"}) == FREE

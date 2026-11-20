@@ -22,7 +22,7 @@ Only tests/test_shell_rule.py and tests/test_rules_set.py are run.
 import re
 import sys
 
-from _runner import ROOT, run
+from _runner import ROOT, nth, rep, run
 
 TESTS = ["test_shell_rule.py", "test_rules_set.py"]
 
@@ -238,8 +238,8 @@ MUTANTS = [
     ("path: a pattern never fits everything", R, one('everything = not pieces[first].strip("*?.")', "everything = False")),
     ("path: .* is not taken to fit everything", R, one('everything = not pieces[first].strip("*?.")', 'everything = not pieces[first].strip("*?")')),
     ("path: a pattern is judged by itself and not by the folder it is in", R, one('        text = "/".join(pieces[:first]) or ("/" if text.startswith("/") else ".")\n', "")),
-    ("path: a pattern just under / is read from the folder of the cd", R, one('or ("/" if text.startswith("/") else ".")', 'or "."')),
-    ("path: a pattern with no folder is read from the top", R, one('or ("/" if text.startswith("/") else ".")', 'or "/"')),
+    ("path: a pattern just under / is read from the folder of the cd", R, lambda text: nth(text, 'or ("/" if text.startswith("/") else ".")', 'or "."')),  # the first is _top's; the second is the folders check's
+    ("path: a pattern with no folder is read from the top", R, lambda text: nth(text, 'or ("/" if text.startswith("/") else ".")', 'or "/"')),
     ("path: a pattern that fits some of a top folder is not a wipe", R, one("    return everything is None or everything or not _is_home(place)", "    return everything is None or everything")),
     ("path: a pattern that fits some of the home folder is a wipe", R, one("    return everything is None or everything or not _is_home(place)", "    return True")),
     ("path: a word with no pattern is never a top folder", R, one("    return everything is None or everything or not _is_home(place)", "    return bool(everything) or (everything is not None and not _is_home(place))")),
@@ -484,7 +484,7 @@ MUTANTS = [
     ("look: a key in the command is free", R, one('            found += [(NEEDS_YES, f"the command holds what looks like {kind}") for kind in sensitive(text)]\n', "")),
     ("look: only the first word of a list is checked for keys and unseen characters", R, one("        for text in texts:\n            if any(ord(character)", "        for text in texts[:1]:\n            if any(ord(character)")),
     ("look: only the first part of the command is looked at", R, one("        for join, words, where in _steps(parts):\n            found += _wipes(words, where)\n", "        for join, words, where in list(_steps(parts))[:1]:\n            found += _wipes(words, where)\n")),
-    ("look: no part of the command is asked about", R, one('            if join != "(" and not self._listed(words):\n                found += [(NEEDS_YES, reason) for reason in _part_asks(words, where, piped=join == "|" and before in _FETCHERS)]\n', "")),
+    ("look: no part of the command is asked about", R, one('                found += [(NEEDS_YES, reason) for reason in _part_asks(words, where, piped=join == "|" and before in _FETCHERS)]\n', "                pass\n")),
     ("look: a part cut off by a bracket is asked about like any other", R, one('            if join != "(" and not self._listed(words):\n', "            if not self._listed(words):\n")),
     ("look: the owner's own commands ask like any other", R, one('            if join != "(" and not self._listed(words):\n', '            if join != "(":\n')),
     ("look: a part asks with the cd before it forgotten", R, one("for reason in _part_asks(words, where, piped=", "for reason in _part_asks(words, None, piped=")),
@@ -533,8 +533,8 @@ MUTANTS = [
     ("setup: the shell rule goes by another kind", R, one('    kind = "shell"\n', '    kind = "web"\n')),
     ("setup: shell is not one of the names the module gives out", R, one('"web", "shell", "files"', '"web", "files"')),
     ("setup: the name of the rule does not hang on the owner's commands", R, one('{"allow": sorted(list(entry) for entry in allowed), "ignore"', '{"allow": [], "ignore"')),
-    ("setup: the name of the rule does not hang on the names to ignore", R, sh('"ignore": sorted(ignored), "fields": fields})', '"ignore": [], "fields": fields})')),
-    ("setup: the name of the rule does not hang on the name of the command input", R, sh('"ignore": sorted(ignored), "fields": fields})', '"ignore": sorted(ignored), "fields": {}})')),
+    ("setup: the name of the rule does not hang on the names to ignore", R, sh('"ignore": sorted(ignored), "fields": fields}\n', '"ignore": [], "fields": fields}\n')),
+    ("setup: the name of the rule does not hang on the name of the command input", R, sh('"ignore": sorted(ignored), "fields": fields}\n', '"ignore": sorted(ignored), "fields": {}}\n')),
     ("setup: the words for a command that runs free are changed", R, one('    _fine = "every part of the command only reads, or is a command you allow"\n', '    _fine = "the command only reads"\n')),
     # ---- the rules set's shell cases ----
     ("set: rm is on the set's list of the owner's commands", S, one(SET_RULE, 'shell = rules.shell(allow=["pytest", "git add", "git commit", "rm"], ignore=["timeout"])')),
@@ -583,6 +583,28 @@ MUTANTS += [(f"other: the word {name} is not known to mean an install", R, drop(
 MUTANTS += [(f"private: {name} is not known as a place for keys", R, item("_SECRET_NAMES", name)) for name in SECRET_NAMES]
 MUTANTS += [(f"private: a file ending {name} is not known as a key", R, item("_SECRET_ENDINGS", name)) for name in SECRET_ENDINGS]
 MUTANTS += [(f"private: a file with {name} in its name is free", R, item("_SECRET_WORDS", name)) for name in SECRET_WORDS]
+
+# folders: reads by the shell kept to the folders (kettle.claude_code uses this for Bash)
+MUTANTS += [
+    ("folders: never looked at", R, rep("                if self._folders is not None and _reader(words[0].text, [word.text for word in words[1:]]) is not None:\n", "                if False:\n")),
+    ("folders: links are not followed", R, rep("                real = _real(whole if whole is not None else os.path.join(here, look))\n", "                real = _tidy(whole if whole is not None else os.path.join(here, look))\n")),
+    ("folders: an option's value after = is not looked at", R, rep('                text = text.partition("=")[2] if "=" in text else ""\n', '                text = ""\n')),
+    ("folders: a pattern is taken as the name it is", R, rep("            if word.pattern:\n                # What a pattern fits", "            if False:\n                # What a pattern fits")),
+    ("folders: the names a pattern fits are not looked at", R, rep("                looks = [start] + fits[:_MAX_FITS]", "                looks = [start] + []")),
+    ("folders: only the whole pattern is fitted, not each step", R, rep("                for end in range(skip + first + 1, len(cut) + 1):\n", "                for end in range(len(cut), len(cut) + 1):\n")),
+    ("folders: the folder a pattern starts in is not looked at", R, rep("                looks = [start] + fits[:_MAX_FITS]", "                looks = fits[:_MAX_FITS]")),
+    ("folders: a cd is not followed", R, rep("                here = _moved(words, here)\n", "                pass\n")),
+    ("folders: a cd that cannot be told is taken as no move", R, rep('    if len(words) != 2 or words[1].pattern or words[1].text == "-":\n        return None\n', '    if len(words) != 2 or words[1].pattern or words[1].text == "-":\n        return here\n')),
+    ("folders: a bare cd stays put", R, rep("    if len(words) == 1:\n        return _real(home)\n", "    if len(words) == 1:\n        return here\n")),
+    ("folders: where a pathless command runs is not looked at", R, rep("        if not named and not _under(here, self._folders, exact=True):\n", "        if False:\n")),
+    ("folders: where it runs asks even when paths are named", R, rep("        if not named and not _under(here, self._folders, exact=True):\n", "        if not _under(here, self._folders, exact=True):\n")),
+    ("folders: an unknown place after a cd is free", R, rep('            return ["it runs after a cd the rule cannot follow, so where it reads cannot be told"]\n', "            return []\n")),
+    ("folders: only the first word is looked at", R, rep("                if not _under(real, self._folders, exact=True) and real not in places:\n                    places.append(real)\n", "                if not _under(real, self._folders, exact=True) and real not in places:\n                    places.append(real)\n            break\n")),
+    ("folders: the count of more places is left off", R, rep('            more = f" (and {len(places) - 1} more)" if len(places) > 1 else ""\n', '            more = ""\n')),
+    ("folders: base is not needed", R, rep('    if type(base) is not str:\n        raise RulesError("with folders, base must be the folder the command runs in, as text")\n', "    base = base or '/'\n")),
+    ("folders: base without folders is taken", R, rep('        if base is not None:\n            raise RulesError("base is only for folders")\n', "")),
+    ("folders: the folders are not in the rule's settings", R, rep('            settings.update({"folders": list(folders), "base": base})\n', "            pass\n")),
+]
 
 KNOWN = {}
 
