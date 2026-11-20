@@ -543,6 +543,27 @@ What counts as a yes:
 - At most 3 actions are on the phone at a time (`at_once`). The rest wait.
 - If Telegram cannot be reached, or answers with an error, nothing is approved.
 
+#### One bot for your app's chat and the buttons
+
+*Newer than release 0.2.1. The tests run it against a pretend Telegram. Not tried on a real phone yet.*
+
+Telegram lets only one program listen to a bot. An app that chats with its owner over Telegram would
+otherwise need a second bot for the buttons. With `on_message`, the approver hands the app each message the
+owner types in that same chat:
+
+```python
+approver = TelegramApprover(cp, token=token, chat_id=chat_id, on_message=handle_owners_message)
+```
+
+- Only the owner's own text, in the owner's private chat, sent after `start()`. Anything else is passed over,
+  and so is a message from the same second as `start()`: Telegram dates messages only to the second. What
+  was waiting at Telegram when it started is cleared first, whatever its date says; a button press found
+  there is dealt with as usual.
+- A typed message is still never an answer: "yes" or "approve" typed in the chat approves nothing.
+- `on_message` runs on a thread of its own, one message at a time, in order. A slow or broken one never holds
+  up a button press, and the next message is still handed on.
+- Your app can reply with the same bot (`sendMessage` does not listen, so it does not clash).
+
 #### Approve and trust
 
 *Newer than release 0.2.1. The tests run it against a pretend Telegram. On a real phone it was tried by hand
@@ -825,12 +846,12 @@ change). The built package has a row of its own. Where a row was measured on old
 
 | Check | Command | Result |
 | --- | --- | --- |
-| The tests | `.venv/bin/pytest` | 5456 passed on Python 3.14.8 on 2026-11-19, with both extras installed (`claude` and `openai`). Not measured again on other versions or with no extras. For release 0.2.1, on 2026-11-18: 5228. On 2026-11-17, before the ready-made rules were added: 1119. For 0.2.0, on 2026-11-17: 1059 passed on 3.14.8. For 0.1.0, on 2026-11-15: 604 passed on 3.14.8 and 3.15.2; on 3.11.18, 603 passed and 1 was skipped (it needs 3.14); with neither extra, on 3.15.2, 598 passed and 6 were skipped. |
+| The tests | `.venv/bin/pytest` | 5466 passed on Python 3.14.8 on 2026-11-19, with both extras installed (`claude` and `openai`). Not measured again on other versions or with no extras. For release 0.2.1, on 2026-11-18: 5228. On 2026-11-17, before the ready-made rules were added: 1119. For 0.2.0, on 2026-11-17: 1059 passed on 3.14.8. For 0.1.0, on 2026-11-15: 604 passed on 3.14.8 and 3.15.2; on 3.11.18, 603 passed and 1 was skipped (it needs 3.14); with neither extra, on 3.15.2, 598 passed and 6 were skipped. |
 | The attack test's check of itself | `.venv/bin/python -m kettle.attacktest --self-check` | 8 of 8 checks held, on each of the two case sets (add `--cases fraud` for the second) |
 | Checkpoint and source trail broken on purpose | `.venv/bin/python checks/break_checkpoint.py` | 282 breaks tried, 282 caught by the tests |
 | Attack test broken on purpose | `.venv/bin/python checks/break_attacktest.py` | 107 breaks tried, 106 caught, 1 known and explained |
 | Adapters broken on purpose | `.venv/bin/python checks/break_adapters.py` | 43 breaks tried, 43 caught by the tests |
-| Telegram approver broken on purpose | `.venv/bin/python checks/break_telegram.py` | 214 breaks tried, 213 caught by the tests, 1 known and explained (a second check that the first one always answers first) |
+| Telegram approver broken on purpose | `.venv/bin/python checks/break_telegram.py` | 227 breaks tried, 226 caught by the tests, 1 known and explained (a second check that the first one always answers first) |
 | Attacks on the yes | `.venv/bin/python -m kettle.attacktest --yes-set` | 25 tried: 23 stopped, 2 got through, both known limits (named above) |
 | Attacks on the yes broken on purpose | `.venv/bin/python checks/break_yes_set.py` | 65 breaks tried, 65 caught by the tests |
 | Browser demo broken on purpose | `.venv/bin/python checks/break_demo.py` | 43 breaks tried, 43 caught by the tests |
@@ -844,7 +865,7 @@ change). The built package has a row of its own. Where a row was measured on old
   those rules, the hold in `src/kettle/holds.py`, asking again when a rule's reasons change, the published
   coding-agent tricks, the commands that check the attack test's own numbers, and more cases for the source
   trail and the attack test. All are new since 0.2.0 and most are not described in this README yet.
-  Of the rest, 36 are for `kettle.mcp`, 435 for the checkpoint, 301 for the attack test, 64 for the adapters, 227 for the
+  Of the rest, 36 are for `kettle.mcp`, 435 for the checkpoint, 301 for the attack test, 64 for the adapters, 237 for the
   Telegram approver, 39 for the attacks on the yes, 25 for the browser demo and 31 for the receipts. 8 run
   the examples and 7 check that the tests stay on this machine. Of the checkpoint's, the 102 in
   `tests/test_fixed_ways_around.py` are the ones that try a way around it (a changed action, a reused or

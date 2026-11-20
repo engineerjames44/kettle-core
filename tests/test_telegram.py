@@ -1719,3 +1719,132 @@ def test_the_button_names_neither_the_request_nor_the_values(cp, watched, telegr
     data = buttons(message)["trust"]
     assert data.startswith("t:") and watched.request_id not in data and "sam" not in data and watched.fingerprint[:8] not in data
     assert data[2:] == buttons(message)["Approve"][2:]  # the same random code as its Approve, kept in memory
+
+
+# ---- one bot for the app's chat and the buttons ---------------------------------------
+
+
+def listening(phone, **settings):
+    """An approver that hands the owner's typed messages to a list, once a second has passed since it started."""
+    heard = []
+    approver = phone(on_message=heard.append, **settings)
+    approver.heard = heard
+    past_the_second_it_started(approver)
+    return approver
+
+
+def past_the_second_it_started(approver):
+    """Telegram dates a message to the second, and the second the approver started in is passed over."""
+    assert until(lambda: int(time.time()) > approver._since, 2)
+
+
+def test_the_owners_typed_messages_are_handed_to_the_app_in_order(cp, telegram, phone):
+    approver = listening(phone)
+    for text in ["add milk to my list", "and eggs", "thanks"]:
+        telegram.say(text, from_id=OWNER)
+    assert until(lambda: approver.heard == ["add milk to my list", "and eggs", "thanks"])
+
+
+def test_messages_from_anyone_else_or_anywhere_else_are_passed_over(cp, telegram, phone):
+    approver = listening(phone)
+    telegram.say("from someone else", from_id=SOMEONE_ELSE)
+    telegram.say("the owner, in a group", from_id=OWNER, chat_id=-100123)
+    telegram.say("someone else, in the owner's chat", from_id=SOMEONE_ELSE, chat_id=OWNER)
+    telegram.hand_over({"message": {"message_id": 99, "from": {"id": OWNER}, "chat": {"id": OWNER, "type": "channel"}, "date": int(time.time()), "text": "a channel"}})
+    telegram.hand_over({"message": {"message_id": 98, "from": {"id": OWNER}, "chat": {"id": OWNER, "type": "private"}, "date": int(time.time()), "photo": [{}]}})
+    telegram.say("the owner", from_id=OWNER)
+    assert until(lambda: approver.heard == ["the owner"])
+    time.sleep(0.2)
+    assert approver.heard == ["the owner"]
+
+
+def test_a_message_sent_before_it_started_is_passed_over(cp, telegram, phone):
+    telegram.hand_over({"message": {"message_id": 1, "from": {"id": OWNER}, "chat": {"id": OWNER, "type": "private"}, "date": int(time.time()) - 600, "text": "old: delete everything"}})
+    approver = listening(phone)
+    same_second = {"message_id": 2, "from": {"id": OWNER}, "chat": {"id": OWNER, "type": "private"}, "date": approver._since, "text": "maybe older: delete"}
+    telegram.hand_over({"message": same_second})  # dated the second it started in: it may have been typed just before
+    telegram.say("new", from_id=OWNER)
+    assert until(lambda: approver.heard == ["new"])
+    assert approver.heard == ["new"]
+
+
+def test_what_waited_at_telegram_before_it_started_is_passed_over_whatever_its_date(cp, telegram, phone):
+    future = int(time.time()) + 3600  # as if this machine's clock were an hour behind Telegram's
+    telegram.hand_over({"message": {"message_id": 1, "from": {"id": OWNER}, "chat": {"id": OWNER, "type": "private"}, "date": future, "text": "old, dated ahead: delete"}})
+    approver = listening(phone)
+    assert until(lambda: approver._drained)
+    telegram.say("new", from_id=OWNER)
+    telegram.hand_over({"message": {"message_id": 3, "from": {"id": OWNER}, "chat": {"id": OWNER, "type": "private"}, "date": future, "text": "after"}})
+    assert until(lambda: approver.heard == ["new", "after"])
+
+
+def test_a_backlog_longer_than_one_handover_is_cleared_to_the_end(cp, telegram, phone, monkeypatch):
+    for number in range(150):
+        telegram.hand_over({"message": {"message_id": number, "from": {"id": OWNER}, "chat": {"id": OWNER, "type": "private"}, "date": int(time.time()) + 3600, "text": f"old {number}"}})
+    real = telegram._getUpdates
+
+    def at_most_100(body):  # as the real Telegram does
+        code, found = real(body)
+        return code, found[:100] if type(found) is list else found
+
+    monkeypatch.setattr(telegram, "_getUpdates", at_most_100)
+    approver = listening(phone)
+    assert until(lambda: approver._drained)
+    telegram.say("new", from_id=OWNER)
+    assert until(lambda: approver.heard == ["new"])
+    time.sleep(0.2)
+    assert approver.heard == ["new"]
+
+
+def test_a_press_waiting_when_the_backlog_is_cleared_still_counts(cp, held, world, telegram, phone):
+    approver = phone(start=False, on_message=lambda text: None)
+    with approver._lock:  # as if the buttons went out, and were pressed, just before the backlog was cleared
+        approver._since = int(time.time())
+        approver._drained = False
+    approver._send_step()
+    (message,) = telegram.with_buttons()
+    query = telegram.press(message["message_id"], "Approve")
+    approver._listen_step()  # the clearing call, which finds the press
+    approver._listen_step()  # and the one after it, which finds nothing left
+    assert approver._drained and telegram.answer_to(query)["text"].startswith("Approved")
+    assert state(cp, held.request_id) == "approved"
+
+
+def test_with_on_message_typed_text_is_still_never_an_answer(cp, held, world, telegram, phone):
+    approver = listening(phone)
+    (message,) = on_screen(telegram)
+    for text in ["yes", "approve", "a:" + buttons(message)["Approve"][2:]]:
+        telegram.say(text, from_id=OWNER)
+    assert until(lambda: len(approver.heard) == 3)
+    assert state(cp, held.request_id) == "held" and world.risky() == []
+
+
+def test_a_slow_or_broken_on_message_never_holds_up_a_press(cp, held, telegram, phone):
+    def slow(text):
+        if text == "slow":
+            time.sleep(2)
+        raise RuntimeError("the app broke")
+
+    approver = phone(on_message=slow)
+    past_the_second_it_started(approver)
+    (message,) = on_screen(telegram)
+    telegram.say("slow", from_id=OWNER)
+    started = time.monotonic()
+    assert telegram.answer_to(telegram.press(message["message_id"], "Approve"))["text"].startswith("Approved")
+    assert time.monotonic() - started < 1.5
+    telegram.say("after", from_id=OWNER)
+    assert until(lambda: sum("on_message failed" in line for line in approver.problems) == 2, 5)
+
+
+def test_typed_messages_are_asked_for_only_when_the_app_wants_them(cp, telegram, phone):
+    phone()
+    assert until(lambda: telegram.made("getUpdates"))
+    assert all(body["allowed_updates"] == ["callback_query"] for body in telegram.made("getUpdates"))
+    listening(phone)
+    listens = lambda: [body for body in telegram.made("getUpdates") if body["timeout"] != 0]  # not the one call that clears the backlog
+    assert until(lambda: any(body["allowed_updates"] == ["callback_query", "message"] for body in listens()))
+
+
+def test_on_message_must_be_a_function(cp, telegram):
+    with pytest.raises(TelegramError, match="on_message"):
+        TelegramApprover(cp, token=telegram.token, chat_id=OWNER, api=telegram.api, on_message="print")

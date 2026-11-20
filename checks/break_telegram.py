@@ -100,7 +100,7 @@ MUTANTS = [
     ("press: a press with no message stops the listener", TG, rep('message = query.get("message") if type(query.get("message")) is dict else {}', 'message = query.get("message")')),
     ("press: a press with no chat stops the listener", TG, rep('chat = message.get("chat") if type(message.get("chat")) is dict else {}', 'chat = message.get("chat")')),
     ("press: data that is not text stops the listener", TG, rep('data.partition(":") if type(data) is str else ("", "", "")', 'data.partition(":")')),
-    ("press: an update that is not a press stops the listener", TG, rep("        if type(query) is not dict:\n            return  #", "        if query is None:\n            return  #")),
+    ("press: an update that is not a press stops the listener", TG, rep('        if type(query) is not dict:\n            self._typed(update.get("message"))\n            return  #', '        if query is None:\n            self._typed(update.get("message"))\n            return  #')),
     ("press: a button counts on any message", TG, rep("elif shown is None or message.get(\"message_id\") != shown.buttons_message:", "elif shown is None:")),
     ("press: any letter before the code is a deny", TG, rep('shown = self._nonces.get(nonce) if kind in ("a", "d", "t") else None', "shown = self._nonces.get(nonce)")),
     ("press: the code alone is enough", TG, rep('shown = self._nonces.get(nonce) if kind in ("a", "d", "t") else None', "shown = self._nonces.get(nonce) or self._nonces.get(kind)")),
@@ -130,7 +130,6 @@ MUTANTS = [
     ("answer: an answered action is left on the list", TG, rep("        finally:\n            with self._lock:\n                self._forget(shown)\n", "        finally:\n            pass\n")),
     # listening
     ("listen: an update is handed over again and again", TG, rep("            self._offset = max(self._offset, number + 1)  #", "            pass  #")),
-    ("listen: typed messages are asked for too", TG, rep('"allowed_updates": ["callback_query"]', '"allowed_updates": ["callback_query", "message"]')),
     ("listen: an answer that is not ok is taken", TG, rep('if type(answer) is not dict or answer.get("ok") is not True:', "if type(answer) is not dict:")),
     # faults
     ("fault: one fault stops the loop for good", TG, rep("                wait, retry = retry, min(retry * 2, 30.0)\n", "                return\n")),
@@ -253,6 +252,21 @@ MUTANTS = [
     ("trust: a broken trust function stops the approver", TG, rep("            names = list(self._trust(dict(item)) or ())\n        except Exception:", "            names = list(self._trust(dict(item)) or ())\n        except ZeroDivisionError:")),
     ("trust: one of the two functions is enough", TG, rep("if (trust is None) != (on_trust is None) or not all(", "if not all(")),
     ("trust: the trust button has a code of its own that is not kept", TG, rep('"callback_data": "t:" + shown.nonce}', '"callback_data": "t:" + secrets.token_urlsafe(24)}')),
+    # one bot for the app's chat and the buttons
+    ("message: anyone's typed message is handed to the app", TG, rep('if sender.get("id") != self._chat_id or type(sender.get("id")) is not int or chat.get("id") != self._chat_id or chat.get("type") != "private":', 'if False:')),
+    ("message: the owner's message in a group is handed to the app", TG, rep(' or chat.get("type") != "private":\n            return\n        if type(message.get("date"))', ':\n            return\n        if type(message.get("date"))')),
+    ("message: someone else in the owner's chat is handed to the app", TG, rep('if sender.get("id") != self._chat_id or type(sender.get("id")) is not int or chat.get("id")', 'if type(sender.get("id")) is not int or chat.get("id")')),
+    ("message: one sent before start is handed to the app", TG, rep('if type(message.get("date")) is not int or message["date"] <= self._since:', 'if type(message.get("date")) is not int:')),
+    ("message: what waited at Telegram before start is not cleared first", TG, rep("            self._drained = self._on_message is None  #", "            self._drained = True  #")),
+    ("message: a press waiting when the backlog is cleared is dropped", TG, rep("                if type(update.get(\"callback_query\")) is dict:\n                    self._on_update(update)\n", "")),
+    ("message: only the first hundred of the backlog are cleared", TG, rep("            self._drained = not backlog  #", "            self._drained = True  #")),
+    ("message: one from the second it started in is handed to the app", TG, rep('message["date"] <= self._since:', 'message["date"] < self._since:')),
+    ("message: typed messages are asked for with no on_message", TG, rep('kinds = ["callback_query", "message"] if self._on_message is not None else ["callback_query"]', 'kinds = ["callback_query", "message"]')),
+    ("message: typed messages are never asked for", TG, rep('kinds = ["callback_query", "message"] if self._on_message is not None else ["callback_query"]', 'kinds = ["callback_query"]')),
+    ("message: on_message runs on the thread that hears presses", TG, rep('            self._messages.put(message["text"])', '            self._on_message(message["text"])')),
+    ("message: a broken on_message stops the messages", TG, rep("                self._on_message(text)\n            except Exception:", "                self._on_message(text)\n            except ZeroDivisionError:")),
+    ("message: a message that is not text is handed on as empty text", TG, rep('if type(message.get("text")) is str and message["text"]:\n            self._messages.put(message["text"])', 'if True:\n            self._messages.put(str(message.get("text", "")))')),
+    ("message: on_message of any kind is taken", TG, rep("        if on_message is not None and not callable(on_message):\n", "        if False:\n")),
 ]
 
 KNOWN = {

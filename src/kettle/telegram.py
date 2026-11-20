@@ -29,6 +29,9 @@ What counts as a yes, and what does not:
     checkpoint has taken the yes is on_trust handed the stored values of the inputs
     it was offered for, so the app can add them to its own list. A plain Approve
     never trusts anything, and Kettle itself never changes a list.
+  - With on_message, the owner's own typed messages in that chat are handed to
+    the app, so one bot can carry the app's chat and the buttons. A typed message
+    is still never an answer: on_message only gets the text.
   - At most at_once actions are on the phone at a time. The rest wait.
   - If Telegram cannot be reached, or answers with an error, nothing is approved.
 
@@ -54,6 +57,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import queue
 import os
 import re
 import secrets
@@ -151,6 +155,7 @@ class TelegramApprover:
         sent: Optional[Callable[[str], Any]] = None,
         trust: Optional[Callable[[dict], Any]] = None,
         on_trust: Optional[Callable[[str, dict], Any]] = None,
+        on_message: Optional[Callable[[str], Any]] = None,
     ) -> None:
         """checkpoint is the Checkpoint whose held actions are sent. Keep this object on the owner's side of your app.
 
@@ -171,6 +176,13 @@ class TelegramApprover:
         button. on_trust(request_id, values) is called after that button's yes has
         been taken by the checkpoint, with the stored value of each of those inputs,
         so the app can add them to its own list. Keep both on the owner's side.
+
+        on_message(text) is called with each text message the owner types in their
+        private chat with the bot, in order, one at a time, on a thread of its own.
+        Messages from anyone else, from anywhere else, or sent before start() are
+        passed over, and so is anything sent in the same second as start(), since
+        Telegram dates a message only to the second. It never answers a held action. With it, give the bot no other
+        job, as always: this object is then the only thing that listens to it.
         """
         if type(token) is not str or not re.fullmatch(r"[0-9]{1,20}:[A-Za-z0-9_-]{1,120}", token):
             raise TelegramError("that is not the shape of a bot token (the value given is not shown)")
@@ -186,6 +198,8 @@ class TelegramApprover:
             raise TelegramError("max_parts must be a whole number, 1 or more")
         if (trust is None) != (on_trust is None) or not all(found is None or callable(found) for found in (trust, on_trust)):
             raise TelegramError("trust and on_trust come together: two functions, or neither")
+        if on_message is not None and not callable(on_message):
+            raise TelegramError("on_message must be a function")
         self._api = _checked_api(api)
         self._token = token
         self._chat_id = chat_id
@@ -199,6 +213,10 @@ class TelegramApprover:
         self._problem = problem
         self._sent = sent
         self._trust, self._on_trust = trust, on_trust
+        self._on_message = on_message
+        self._messages: "queue.Queue[Optional[str]]" = queue.Queue()
+        self._since = 0  # the time start() was called, by the clock Telegram dates messages with
+        self._drained = True
         handlers: list = [_NoRedirects]
         if self._api.startswith("http://"):  # this machine: never by way of a proxy
             handlers.append(urllib.request.ProxyHandler({}))
@@ -223,10 +241,15 @@ class TelegramApprover:
             if self._stop is not None:
                 return
             self._stop = stop = threading.Event()
+            self._since = int(time.time())  # Telegram dates a message in whole seconds of wall-clock time
+            self._messages = queue.Queue()  # nothing left over from an earlier start
+            self._drained = self._on_message is None  # with on_message, what waits at Telegram is cleared first
             self._threads = [
                 threading.Thread(target=self._loop, args=(self._send_step, self._poll, stop), daemon=True, name="kettle-telegram-send"),
                 threading.Thread(target=self._loop, args=(self._listen_step, 0.05, stop), daemon=True, name="kettle-telegram-listen"),
             ]
+            if self._on_message is not None:
+                self._threads.append(threading.Thread(target=self._hand_on, args=(stop,), daemon=True, name="kettle-telegram-messages"))
         for thread in self._threads:
             thread.start()
 
@@ -239,6 +262,7 @@ class TelegramApprover:
             self._nonces.clear()
         if stop is not None:
             stop.set()
+            self._messages.put(None)  # wakes the thread that hands messages on
             for thread in threads:
                 thread.join(wait_seconds)
 
@@ -365,7 +389,22 @@ class TelegramApprover:
             pass
 
     def _listen_step(self) -> None:
-        updates = self._call("getUpdates", {"offset": self._offset, "timeout": self._long_poll, "allowed_updates": ["callback_query"]}, self._long_poll + 10)
+        if not self._drained:
+            # Whatever was waiting at Telegram when this started is passed over, whatever its date says:
+            # a clock a little behind Telegram's could make an old message look new.
+            # A button press in it is dealt with as usual: old buttons answer nothing, and a new one counts.
+            backlog = self._call("getUpdates", {"offset": self._offset, "timeout": 0, "allowed_updates": ["callback_query", "message"]})
+            for update in backlog if type(backlog) is list else []:
+                number = update.get("update_id") if type(update) is dict else None
+                if type(number) is not int:
+                    continue
+                self._offset = max(self._offset, number + 1)
+                if type(update.get("callback_query")) is dict:
+                    self._on_update(update)
+            self._drained = not backlog  # Telegram hands over at most 100 at a time: clear until nothing is left
+            return
+        kinds = ["callback_query", "message"] if self._on_message is not None else ["callback_query"]
+        updates = self._call("getUpdates", {"offset": self._offset, "timeout": self._long_poll, "allowed_updates": kinds}, self._long_poll + 10)
         for update in updates if type(updates) is list else []:
             number = update.get("update_id") if type(update) is dict else None
             if type(number) is not int:
@@ -376,6 +415,7 @@ class TelegramApprover:
     def _on_update(self, update: dict) -> None:
         query = update.get("callback_query")
         if type(query) is not dict:
+            self._typed(update.get("message"))
             return  # typed text, and everything else that is not a button press, is not an answer
         query_id, data = query.get("id"), query.get("data")
         sender = query.get("from") if type(query.get("from")) is dict else {}
@@ -419,6 +459,30 @@ class TelegramApprover:
         self._take_buttons_off(shown, text)
 
     # ---- inside -------------------------------------------------------------------
+
+    def _typed(self, message: Any) -> None:
+        """Queue the owner's own typed text for on_message. Anything else is passed over."""
+        if self._on_message is None or type(message) is not dict:
+            return
+        sender = message.get("from") if type(message.get("from")) is dict else {}
+        chat = message.get("chat") if type(message.get("chat")) is dict else {}
+        if sender.get("id") != self._chat_id or type(sender.get("id")) is not int or chat.get("id") != self._chat_id or chat.get("type") != "private":
+            return
+        if type(message.get("date")) is not int or message["date"] <= self._since:
+            return  # Telegram dates in whole seconds: anything from the second it started in may be older, so it is passed over
+        if type(message.get("text")) is str and message["text"]:
+            self._messages.put(message["text"])
+
+    def _hand_on(self, stop: threading.Event) -> None:
+        """Give the app each typed message in turn. A slow or broken on_message never holds up a button press."""
+        while not stop.is_set():
+            text = self._messages.get()
+            if text is None or stop.is_set():
+                return
+            try:
+                self._on_message(text)
+            except Exception:
+                self._report("message", "kettle.telegram: the app's on_message failed on a message. The next one is still handed on.")
 
     def _keep(self, shown: _Shown) -> str:
         """Hand the app the stored values of the inputs it offered trust for. The action is approved whatever comes of this."""
