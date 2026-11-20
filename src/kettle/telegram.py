@@ -24,6 +24,11 @@ What counts as a yes, and what does not:
   - A press sooner than min_read_seconds after the buttons appeared is not
     counted, so a tap that was meant for something else does not approve.
   - An action too long to read on a phone is sent with a Deny button only.
+  - With trust and on_trust, an action can also get an "Approve and trust" button.
+    It is a yes in the same way as Approve, with the same checks. Only once the
+    checkpoint has taken the yes is on_trust handed the stored values of the inputs
+    it was offered for, so the app can add them to its own list. A plain Approve
+    never trusts anything, and Kettle itself never changes a list.
   - At most at_once actions are on the phone at a time. The rest wait.
   - If Telegram cannot be reached, or answers with an error, nothing is approved.
 
@@ -75,6 +80,10 @@ HOW_TO = "Approve runs exactly what is in the box, once. Deny runs nothing."
 HOW_TO_PARTS = "Approve runs exactly what is in the boxes of all the parts, once. Deny runs nothing."
 FIRST_TIME = "\U0001f195 First time: "  # the NEW sign
 APPROVE, DENY = "\u2705 Approve", "\u274c Deny"  # a tick and a cross
+TRUST = "\u2705 Approve and trust"
+HOW_TO_TRUST = "Approve and trust also adds {what} to the app's list."
+TRUSTED = "Approved, and {what} added to the app's list. It runs once, exactly as shown."
+NOT_TRUSTED = "Approved. It runs once, exactly as shown. Nothing was added to the app's list: the app could not take it."
 SENT_NOTE = "kettle.telegram: {tool} is with Telegram, on its way to your phone (fingerprint {start}...). Waiting for your answer."
 NAMES_SHOWN = 3  # first-time inputs named above the box; more than this are counted
 NOT_YOURS = "Only the owner can answer this."
@@ -108,10 +117,11 @@ class _NoRedirects(urllib.request.HTTPRedirectHandler):
 class _Shown:
     """One held action as it stands on the phone."""
 
-    __slots__ = ("request_id", "fingerprint", "tool", "nonce", "parts", "can_approve", "sent", "buttons_message", "shown_at", "answered")
+    __slots__ = ("request_id", "fingerprint", "tool", "nonce", "parts", "can_approve", "trust", "sent", "buttons_message", "shown_at", "answered")
 
-    def __init__(self, request_id: str, fingerprint: str, tool: str, parts: list, can_approve: bool) -> None:
+    def __init__(self, request_id: str, fingerprint: str, tool: str, parts: list, can_approve: bool, trust: tuple = ()) -> None:
         self.request_id, self.fingerprint, self.tool = request_id, fingerprint, tool
+        self.trust = trust  # the inputs "Approve and trust" was offered for; none: no such button
         self.nonce = secrets.token_urlsafe(24)
         self.parts = parts  # (text, entities) of each message to send
         self.can_approve = can_approve
@@ -139,6 +149,8 @@ class TelegramApprover:
         clock: Callable[[], float] = time.monotonic,
         problem: Optional[Callable[[str], Any]] = None,
         sent: Optional[Callable[[str], Any]] = None,
+        trust: Optional[Callable[[dict], Any]] = None,
+        on_trust: Optional[Callable[[str, dict], Any]] = None,
     ) -> None:
         """checkpoint is the Checkpoint whose held actions are sent. Keep this object on the owner's side of your app.
 
@@ -152,6 +164,13 @@ class TelegramApprover:
         buttons and all. With none, nothing is said. The line names the tool and the
         start of the fingerprint, never a value. Telegram having it does not mean
         the phone shows it yet.
+
+        trust and on_trust come together, or not at all. trust is called with each
+        held action as pending() gives it, and returns the names of the inputs to
+        offer "Approve and trust" for: watched inputs only, and none for no such
+        button. on_trust(request_id, values) is called after that button's yes has
+        been taken by the checkpoint, with the stored value of each of those inputs,
+        so the app can add them to its own list. Keep both on the owner's side.
         """
         if type(token) is not str or not re.fullmatch(r"[0-9]{1,20}:[A-Za-z0-9_-]{1,120}", token):
             raise TelegramError("that is not the shape of a bot token (the value given is not shown)")
@@ -165,6 +184,8 @@ class TelegramApprover:
             raise TelegramError("min_read_seconds must be a number, 0 or more")
         if type(max_parts) is not int or max_parts < 1:
             raise TelegramError("max_parts must be a whole number, 1 or more")
+        if (trust is None) != (on_trust is None) or not all(found is None or callable(found) for found in (trust, on_trust)):
+            raise TelegramError("trust and on_trust come together: two functions, or neither")
         self._api = _checked_api(api)
         self._token = token
         self._chat_id = chat_id
@@ -177,6 +198,7 @@ class TelegramApprover:
         self._clock = clock
         self._problem = problem
         self._sent = sent
+        self._trust, self._on_trust = trust, on_trust
         handlers: list = [_NoRedirects]
         if self._api.startswith("http://"):  # this machine: never by way of a proxy
             handlers.append(urllib.request.ProxyHandler({}))
@@ -281,8 +303,9 @@ class TelegramApprover:
             new = [item for item in waiting if item["request_id"] not in self._shown]
             room = self._at_once - len(self._shown)
             for index, item in enumerate(new[: max(room, 0)]):
-                parts, can_approve = _parts(item["preview"], len(new) - index - 1, self._max_parts, item["tool"], item.get("first_time"))
-                shown = _Shown(item["request_id"], item["fingerprint"], item["tool"], parts, can_approve)
+                offered = self._offered(item)
+                parts, can_approve = _parts(item["preview"], len(new) - index - 1, self._max_parts, item["tool"], item.get("first_time"), offered)
+                shown = _Shown(item["request_id"], item["fingerprint"], item["tool"], parts, can_approve, offered if can_approve else ())
                 self._shown[shown.request_id] = self._nonces[shown.nonce] = shown
             to_send = [shown for shown in self._shown.values() if shown.buttons_message is None]
         for shown in gone:  # answered somewhere else, or expired
@@ -290,6 +313,24 @@ class TelegramApprover:
             self._take_buttons_off(shown, f"No longer open ({found['state'] if found else 'gone'}). Nothing more can be done with it here.")
         for shown in to_send:
             self._deliver(shown)
+
+    def _offered(self, item: dict) -> tuple:
+        """The inputs to offer "Approve and trust" for: the app's choice, kept to watched inputs. A broken choice offers none."""
+        if self._trust is None:
+            return ()
+        try:
+            names = list(self._trust(dict(item)) or ())
+        except Exception:
+            self._report("trust", "kettle.telegram: the app's trust function failed, so no Approve and trust button was offered.")
+            return ()
+        watched = item.get("watched") if type(item.get("watched")) in (list, tuple) else []
+        return tuple(sorted({name for name in names if type(name) is str and name in watched}))
+
+    def _report(self, key: str, line: str) -> None:
+        try:
+            (self._problem or (lambda text: print(text, file=sys.stderr)))(line)
+        except Exception:
+            pass
 
     def _deliver(self, shown: _Shown) -> None:
         """Send the parts that have not gone out yet. The buttons go on the last one, after all the rest."""
@@ -299,7 +340,10 @@ class TelegramApprover:
             last = shown.sent == len(shown.parts) - 1
             if last:
                 keys = [{"text": APPROVE, "callback_data": "a:" + shown.nonce}] if shown.can_approve else []
-                body["reply_markup"] = {"inline_keyboard": [keys + [{"text": DENY, "callback_data": "d:" + shown.nonce}]]}
+                rows = [keys + [{"text": DENY, "callback_data": "d:" + shown.nonce}]]
+                if shown.trust:  # a row of its own, so it is not pressed for Approve by mistake
+                    rows.append([{"text": TRUST, "callback_data": "t:" + shown.nonce}])
+                body["reply_markup"] = {"inline_keyboard": rows}
             sent = self._call("sendMessage", body)
             message_id = sent.get("message_id") if type(sent) is dict else None
             if type(message_id) is not int:
@@ -342,14 +386,16 @@ class TelegramApprover:
             return self._answer(query_id, NOT_YOURS)
         kind, _, nonce = data.partition(":") if type(data) is str else ("", "", "")
         with self._lock:
-            shown = self._nonces.get(nonce) if kind in ("a", "d") else None
+            shown = self._nonces.get(nonce) if kind in ("a", "d", "t") else None
             if shown is not None and shown.buttons_message is None:
                 return_text = TOO_SOON  # the buttons are out, and this object has not been told so yet
             elif shown is None or message.get("message_id") != shown.buttons_message:
                 return_text = NOT_OPEN
-            elif kind == "a" and not shown.can_approve:
+            elif kind == "t" and not shown.trust:
+                return_text = NOT_OPEN  # no such button was sent for this action
+            elif kind in ("a", "t") and not shown.can_approve:
                 return_text = NOT_HERE
-            elif kind == "a" and self._clock() - shown.shown_at < self._min_read:
+            elif kind in ("a", "t") and self._clock() - shown.shown_at < self._min_read:
                 return_text = TOO_SOON
             else:
                 return_text = None
@@ -358,9 +404,11 @@ class TelegramApprover:
         if return_text is not None:
             return self._answer(query_id, return_text, alert=True)
         try:
-            if kind == "a":
+            if kind in ("a", "t"):
                 decision = self._checkpoint.approve(shown.request_id, shown.fingerprint, self._approver)
                 text = "Approved. It runs once, exactly as shown." if decision.status == APPROVED else decision.reason
+                if kind == "t" and decision.status == APPROVED:  # only a yes the checkpoint took is passed on
+                    text = self._keep(shown)
             else:
                 decision = self._checkpoint.deny(shown.request_id, self._approver)
                 text = "Denied. Nothing was run." if decision.status == DENIED else decision.reason
@@ -371,6 +419,18 @@ class TelegramApprover:
         self._take_buttons_off(shown, text)
 
     # ---- inside -------------------------------------------------------------------
+
+    def _keep(self, shown: _Shown) -> str:
+        """Hand the app the stored values of the inputs it offered trust for. The action is approved whatever comes of this."""
+        try:
+            stored = self._checkpoint.inputs(shown.request_id)
+            if type(stored) is not dict or any(name not in stored for name in shown.trust):
+                raise LookupError("the stored inputs are not there")
+            self._on_trust(shown.request_id, {name: stored[name] for name in shown.trust})
+        except Exception:
+            self._report("trust", "kettle.telegram: the app could not take what was trusted. The action is approved; nothing was added.")
+            return NOT_TRUSTED
+        return TRUSTED.format(what=_what(shown.trust))
 
     def _forget(self, shown: _Shown) -> None:
         if self._shown.get(shown.request_id) is shown:
@@ -438,7 +498,7 @@ def _checked_api(api: Any) -> str:
     return f"{parts.scheme}://{parts.netloc}"
 
 
-def _parts(preview: str, behind: int, max_parts: int = MAX_PARTS, tool: Any = None, first_time: Any = None) -> tuple[list, bool]:
+def _parts(preview: str, behind: int, max_parts: int = MAX_PARTS, tool: Any = None, first_time: Any = None, trust: tuple = ()) -> tuple[list, bool]:
     """The messages for one held action, each as (text, entities), and whether it can be approved here.
 
     The preview is sent as it is, as a block of fixed-width text. It is marked as
@@ -485,7 +545,7 @@ def _parts(preview: str, behind: int, max_parts: int = MAX_PARTS, tool: Any = No
         if not can_approve:
             below = f"\n\n{NOT_HERE} It is {len(lines)} lines long and only the start is shown. Approve it where you can read all of it, or deny it here."
         elif number == len(blocks):
-            below = "\n\n" + (HOW_TO if len(blocks) == 1 else HOW_TO_PARTS)
+            below = "\n\n" + (HOW_TO if len(blocks) == 1 else HOW_TO_PARTS) + (" " + HOW_TO_TRUST.format(what=_what(trust)) if trust else "")
         else:
             below = ""
         block = block or " "
@@ -494,6 +554,13 @@ def _parts(preview: str, behind: int, max_parts: int = MAX_PARTS, tool: Any = No
             marks.append({"type": "italic", "offset": _units(above + block) + 2, "length": _units(below) - 2})
         parts.append((above + block + below, marks))
     return parts, can_approve
+
+
+def _what(names: tuple) -> str:
+    """The inputs offered for trust, in words: their names when they are few, short and plain, or else how many."""
+    if len(names) <= NAMES_SHOWN and all(_plain(name) for name in names):
+        return "the " + ", ".join(f'"{name}"' for name in names) + " in the box"
+    return f"the {len(names)} inputs offered"
 
 
 def _plain(name: Any) -> bool:

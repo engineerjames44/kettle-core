@@ -68,9 +68,9 @@ MUTANTS = [
     ("sent: an answer that names no message counts as sent", TG, rep('            if type(message_id) is not int:\n                raise TelegramError("Telegram did not say which message it sent")\n', "")),
     ("sent: every held action is sent at once", TG, rep("room = self._at_once - len(self._shown)", "room = len(new)")),
     ("sent: one more than at_once is sent", TG, rep("room = self._at_once - len(self._shown)", "room = self._at_once - len(self._shown) + 1")),
-    ("sent: how many are waiting is not said", TG, rep('parts, can_approve = _parts(item["preview"], len(new) - index - 1, self._max_parts, item["tool"], item.get("first_time"))', 'parts, can_approve = _parts(item["preview"], 0, self._max_parts, item["tool"], item.get("first_time"))')),
-    ("sent: how many are waiting is one too many", TG, rep('parts, can_approve = _parts(item["preview"], len(new) - index - 1, self._max_parts, item["tool"], item.get("first_time"))', 'parts, can_approve = _parts(item["preview"], len(new) - index, self._max_parts, item["tool"], item.get("first_time"))')),
-    ("sent: the setting for the most parts is not used", TG, rep('parts, can_approve = _parts(item["preview"], len(new) - index - 1, self._max_parts, item["tool"], item.get("first_time"))', 'parts, can_approve = _parts(item["preview"], len(new) - index - 1, MAX_PARTS, item["tool"], item.get("first_time"))')),
+    ("sent: how many are waiting is not said", TG, rep('parts, can_approve = _parts(item["preview"], len(new) - index - 1, self._max_parts, item["tool"], item.get("first_time"), offered)', 'parts, can_approve = _parts(item["preview"], 0, self._max_parts, item["tool"], item.get("first_time"), offered)')),
+    ("sent: how many are waiting is one too many", TG, rep('parts, can_approve = _parts(item["preview"], len(new) - index - 1, self._max_parts, item["tool"], item.get("first_time"), offered)', 'parts, can_approve = _parts(item["preview"], len(new) - index, self._max_parts, item["tool"], item.get("first_time"), offered)')),
+    ("sent: the setting for the most parts is not used", TG, rep('parts, can_approve = _parts(item["preview"], len(new) - index - 1, self._max_parts, item["tool"], item.get("first_time"), offered)', 'parts, can_approve = _parts(item["preview"], len(new) - index - 1, MAX_PARTS, item["tool"], item.get("first_time"), offered)')),
     ("sent: an action that is no longer open keeps its buttons", TG, rep("        for shown in gone:  # answered somewhere else, or expired\n", "        for shown in []:  # answered somewhere else, or expired\n")),
     ("sent: an action that is no longer open is never forgotten", TG, rep("            for shown in gone:\n                self._forget(shown)\n", "")),
     ("sent: the state of an action that closed is not said", TG, rep("f\"No longer open ({found['state'] if found else 'gone'}). Nothing more can be done with it here.\"", '"No longer open. Nothing more can be done with it here."')),
@@ -85,7 +85,7 @@ MUTANTS = [
     ("parts: the first line is missing", TG, rep("            head.append(FIRST_LINE)\n", "            pass\n")),
     ("parts: the parts are not numbered", TG, rep("        if len(blocks) > 1:\n            head.append", "        if False:\n            head.append")),
     ("parts: where the buttons are is not said", TG, rep('(" The buttons are under the last part." if number < len(blocks) else "")', '""')),
-    ("parts: what Approve does is not said", TG, rep('            below = "\\n\\n" + (HOW_TO if len(blocks) == 1 else HOW_TO_PARTS)\n', '            below = ""\n')),
+    ("parts: what Approve does is not said", TG, rep('            below = "\\n\\n" + (HOW_TO if len(blocks) == 1 else HOW_TO_PARTS) + (" " + HOW_TO_TRUST.format(what=_what(trust)) if trust else "")\n', '            below = ""\n')),
     ("parts: an action too long to read does not say so", TG, rep('below = f"\\n\\n{NOT_HERE} It is', 'below = f"\\n\\nIt is')),
     ("parts: the fixed-width mark starts in the wrong place", TG, rep('"offset": _units(above)', '"offset": 0')),
     ("parts: the fixed-width mark stops short", TG, rep('"length": _units(block)}', '"length": _units(block) - 1}')),
@@ -102,19 +102,19 @@ MUTANTS = [
     ("press: data that is not text stops the listener", TG, rep('data.partition(":") if type(data) is str else ("", "", "")', 'data.partition(":")')),
     ("press: an update that is not a press stops the listener", TG, rep("        if type(query) is not dict:\n            return  #", "        if query is None:\n            return  #")),
     ("press: a button counts on any message", TG, rep("elif shown is None or message.get(\"message_id\") != shown.buttons_message:", "elif shown is None:")),
-    ("press: any letter before the code is a deny", TG, rep('shown = self._nonces.get(nonce) if kind in ("a", "d") else None', "shown = self._nonces.get(nonce)")),
-    ("press: the code alone is enough", TG, rep('shown = self._nonces.get(nonce) if kind in ("a", "d") else None', "shown = self._nonces.get(nonce) or self._nonces.get(kind)")),
-    ("press: the start of the code is enough", TG, rep('shown = self._nonces.get(nonce) if kind in ("a", "d") else None', 'shown = next((each for code, each in self._nonces.items() if nonce and code.startswith(nonce)), None) if kind in ("a", "d") else None')),
-    ("press: an approve made up for a Deny-only action counts", TG, rep('            elif kind == "a" and not shown.can_approve:\n                return_text = NOT_HERE\n', "")),
-    ("press: an approve at once counts", TG, rep('            elif kind == "a" and self._clock() - shown.shown_at < self._min_read:\n                return_text = TOO_SOON\n', "")),
+    ("press: any letter before the code is a deny", TG, rep('shown = self._nonces.get(nonce) if kind in ("a", "d", "t") else None', "shown = self._nonces.get(nonce)")),
+    ("press: the code alone is enough", TG, rep('shown = self._nonces.get(nonce) if kind in ("a", "d", "t") else None', "shown = self._nonces.get(nonce) or self._nonces.get(kind)")),
+    ("press: the start of the code is enough", TG, rep('shown = self._nonces.get(nonce) if kind in ("a", "d", "t") else None', 'shown = next((each for code, each in self._nonces.items() if nonce and code.startswith(nonce)), None) if kind in ("a", "d", "t") else None')),
+    ("press: an approve made up for a Deny-only action counts", TG, rep('            elif kind in ("a", "t") and not shown.can_approve:\n                return_text = NOT_HERE\n', "")),
+    ("press: an approve at once counts", TG, rep('            elif kind in ("a", "t") and self._clock() - shown.shown_at < self._min_read:\n                return_text = TOO_SOON\n', "")),
     ("press: an approve exactly on time is too soon", TG, rep("self._clock() - shown.shown_at < self._min_read:", "self._clock() - shown.shown_at <= self._min_read:")),
-    ("press: a deny can be too soon", TG, rep('elif kind == "a" and self._clock() - shown.shown_at < self._min_read:', "elif self._clock() - shown.shown_at < self._min_read:")),
+    ("press: a deny can be too soon", TG, rep('elif kind in ("a", "t") and self._clock() - shown.shown_at < self._min_read:', "elif self._clock() - shown.shown_at < self._min_read:")),
     ("press: the time to read is counted from when the approver was made", TG, rep("shown.buttons_message, shown.shown_at = message_id, self._clock()", "shown.buttons_message = message_id")),
     ("press: a press that does not count gets no answer", TG, rep("            return self._answer(query_id, return_text, alert=True)\n", "            return None\n")),
     ("press: a press that does not count is not shown as an alert", TG, rep("return self._answer(query_id, return_text, alert=True)", "return self._answer(query_id, return_text)")),
     # the answer
-    ("answer: a deny is a yes", TG, rep('            if kind == "a":\n                ' + APPROVE, "            if True:\n                " + APPROVE)),
-    ("answer: an approve is a no", TG, rep('            if kind == "a":\n                ' + APPROVE, "            if False:\n                " + APPROVE)),
+    ("answer: a deny is a yes", TG, rep('            if kind in ("a", "t"):\n                ' + APPROVE, "            if True:\n                " + APPROVE)),
+    ("answer: an approve is a no", TG, rep('            if kind in ("a", "t"):\n                ' + APPROVE, "            if False:\n                " + APPROVE)),
     ("answer: the yes is for whatever is stored now", TG, rep(APPROVE, 'decision = self._checkpoint.approve(shown.request_id, next((p["fingerprint"] for p in self._checkpoint.pending() if p["request_id"] == shown.request_id), shown.fingerprint), self._approver)')),
     ("answer: the action runs as soon as it is approved", TG, rep(APPROVE, APPROVE + "\n                self._checkpoint.run(shown.request_id)")),
     ("answer: who said yes is not written down", TG, rep(APPROVE, "decision = self._checkpoint.approve(shown.request_id, shown.fingerprint)")),
@@ -159,12 +159,12 @@ MUTANTS = [
     # the look of the message: what stands around the box
     ("look: the tool is not named in the headline", TG, rep("            if _plain(tool):\n                head.append(tool)\n", "")),
     ("look: a tool name of any shape is put in the headline", TG, rep("            if _plain(tool):\n", "            if type(tool) is str:\n")),
-    ("look: the tool is not passed on to the message", TG, rep('self._max_parts, item["tool"], item.get("first_time"))', 'self._max_parts, None, item.get("first_time"))')),
+    ("look: the tool is not passed on to the message", TG, rep('self._max_parts, item["tool"], item.get("first_time"), offered)', 'self._max_parts, None, item.get("first_time"), offered)')),
     ("look: the headline is not bold", TG, rep('            marks.append({"type": "bold", "offset": 0, "length": _units("\\n".join(head))})\n', "")),
     ("look: the bold runs one place too far", TG, rep('"length": _units("\\n".join(head))})', '"length": _units("\\n".join(head)) + 1})')),
     ("look: the bold covers only the first line", TG, rep('"length": _units("\\n".join(head))})', '"length": _units(head[0])})')),
-    ("look: what is new is not passed on to the message", TG, rep('item["tool"], item.get("first_time"))', 'item["tool"], None)')),
-    ("look: every watched input is named as new", TG, rep('item["tool"], item.get("first_time"))', 'item["tool"], item.get("watched"))')),
+    ("look: what is new is not passed on to the message", TG, rep('item["tool"], item.get("first_time"), offered)', 'item["tool"], None, offered)')),
+    ("look: every watched input is named as new", TG, rep('item["tool"], item.get("first_time"), offered)', 'item["tool"], item.get("watched"), offered)')),
     ("look: the first-time line is left out", TG, rep("            if new:\n                named", "            if False:\n                named")),
     ("look: a first-time name of any shape is shown", TG, rep("named = len(new) <= NAMES_SHOWN and all(_plain(name) for name in new)", "named = len(new) <= NAMES_SHOWN and all(type(name) is str for name in new)")),
     ("look: first-time names are not checked at all", TG, rep("named = len(new) <= NAMES_SHOWN and all(_plain(name) for name in new)", "named = len(new) <= NAMES_SHOWN")),
@@ -236,7 +236,32 @@ MUTANTS = [
     ("command: python -m kettle.telegram does nothing", TG, rep('if __name__ == "__main__":\n    sys.exit(main())', 'if __name__ == "__main__":\n    pass')),
     # a checkpoint set to the width of a phone
     ("width: the box is sent at the usual width, whatever the checkpoint was set to", C, lambda t: nth(t, PREVIEW, 'preview = record.preview(summary, first_time, trail)', 2)),
+    # Approve and trust
+    ("trust: a plain Approve trusts as well", TG, rep('if kind == "t" and decision.status == APPROVED:', 'if kind in ("a", "t") and decision.status == APPROVED:')),
+    ("trust: values are handed on when the checkpoint refused the yes", TG, rep('if kind == "t" and decision.status == APPROVED:', 'if kind == "t":')),
+    ("trust: values are handed on before the yes is given", TG, rep('            if kind in ("a", "t"):\n                decision = self._checkpoint.approve(', '            if kind in ("a", "t"):\n                if kind == "t":\n                    self._keep(shown)\n                decision = self._checkpoint.approve(')),
+    ("trust: a press of trust skips the time to read", TG, rep('elif kind in ("a", "t") and self._clock() - shown.shown_at < self._min_read:', 'elif kind == "a" and self._clock() - shown.shown_at < self._min_read:')),
+    ("trust: a trust press on an action with no trust button approves", TG, rep('            elif kind == "t" and not shown.trust:\n                return_text = NOT_OPEN  # no such button was sent for this action\n', "")),
+    ("trust: a trust press on an action too long for the phone approves", TG, rep('elif kind in ("a", "t") and not shown.can_approve:', 'elif kind == "a" and not shown.can_approve:')),
+    ("trust: offered for inputs that are not watched", TG, rep("if type(name) is str and name in watched}", "if type(name) is str}")),
+    ("trust: offered on an action too long for the phone", TG, rep("parts, can_approve, offered if can_approve else ())", "parts, can_approve, offered)")),
+    ("trust: the button sits beside Approve", TG, rep('rows.append([{"text": TRUST, "callback_data": "t:" + shown.nonce}])', 'rows[0].append({"text": TRUST, "callback_data": "t:" + shown.nonce})')),
+    ("trust: the app is handed the names, not the stored values", TG, rep("{name: stored[name] for name in shown.trust}", "{name: name for name in shown.trust}")),
+    ("trust: the app is handed every stored input", TG, rep("self._on_trust(shown.request_id, {name: stored[name] for name in shown.trust})", "self._on_trust(shown.request_id, dict(stored))")),
+    ("trust: the box does not say what trust adds", TG, rep(' + (" " + HOW_TO_TRUST.format(what=_what(trust)) if trust else "")', "")),
+    ("trust: the app's failure is reported as trusted", TG, rep("            return NOT_TRUSTED\n", "            return TRUSTED.format(what=_what(shown.trust))\n")),
+    ("trust: a broken trust function stops the approver", TG, rep("            names = list(self._trust(dict(item)) or ())\n        except Exception:", "            names = list(self._trust(dict(item)) or ())\n        except ZeroDivisionError:")),
+    ("trust: one of the two functions is enough", TG, rep("if (trust is None) != (on_trust is None) or not all(", "if not all(")),
+    ("trust: the trust button has a code of its own that is not kept", TG, rep('"callback_data": "t:" + shown.nonce}', '"callback_data": "t:" + secrets.token_urlsafe(24)}')),
 ]
 
+KNOWN = {
+    "trust: a trust press on an action too long for the phone approves": (
+        "The second of two checks. An action too long for the phone is never given a trust button (shown.trust is"
+        " empty), so a trust press on it is answered NOT_OPEN by the check before this one. The break that removes"
+        " that first check is caught."
+    ),
+}
+
 if __name__ == "__main__":
-    run(MUTANTS, TESTS)
+    run(MUTANTS, TESTS, KNOWN)

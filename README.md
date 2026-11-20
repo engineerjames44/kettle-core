@@ -339,10 +339,9 @@ and so in the box the Telegram approver sends. The width is a whole number from 
 ```
 ! 1 input below is marked first time
 Summary (written by the app):
-  + "Send an email to\u{0020}
-  + sam.jones@example.com: Hi\u{0020}
-  + Sam, see you Saturday at\u{0020}
-  + the match"
+  + "Send an email to
+  + sam.jones@example.com: Hi Sam, see
+  + you Saturday at the match"
 Action: "send_email"
 Asked through (set by the app): "desk"
   "body": [2 lines]
@@ -363,8 +362,12 @@ Fingerprint:
   32 to 78, and `checks/read_back.py` reads each of its records back at one narrower width as well.
 - **At 78 nothing changes.** A line is still cut 8 characters early, as in every release so far. Below 78
   there are no characters to spare, so a line is filled to the width.
-- A single space where a filled line is cut is written as `\u{0020}`: where the line ends if there is
-  room, and at the start of the next line if there is not. The summary is still cut between words.
+- A single space where a filled line of a value is cut is written as `\u{0020}`: where the line ends if
+  there is room, and at the start of the next line if there is not.
+- The summary is still cut between words, and the space at the cut is not written: a summary line that
+  carries on after `+ ` (a space after the mark) carries on after a space, and one that carries on after
+  `+` with nothing after it was cut inside a word too long to carry down. Newer than release 0.2.1: in
+  0.2.1 the summary's space at a cut was written as `\u{0020}`, as a value's is.
 - A summary, an action name or who asked that does not fit beside its heading starts on the next line.
 - The fingerprint is cut into rows of the same length, so it can be compared row by row: one row from 68,
   two rows of 32 from 36, four rows of 16 below that.
@@ -539,6 +542,39 @@ What counts as a yes:
 - A preview that needs more than 5 messages is sent with a Deny button only.
 - At most 3 actions are on the phone at a time (`at_once`). The rest wait.
 - If Telegram cannot be reached, or answers with an error, nothing is approved.
+
+#### Approve and trust
+
+*Newer than release 0.2.1. The tests run it against a pretend Telegram. On a real phone it was tried by hand
+once, on 2026-11-19, through an app of our own: the press added the address, and the next email to it ran
+with no ask.*
+
+A yes covers one action. To stop being asked about a new address every time, the app can offer a third
+button, **Approve and trust**, and add what was approved to its own list:
+
+```python
+def offer(item):  # each held action, as pending() gives it
+    return ["to"] if item["tool"] == "send_email" else []  # watched inputs only; [] for no button
+
+
+def keep(request_id, values):  # only after the checkpoint took the yes
+    add_to_contacts(values["to"])  # your own list; Kettle never changes one
+
+
+approver = TelegramApprover(cp, token=token, chat_id=chat_id, trust=offer, on_trust=keep)
+```
+
+- It is a yes like Approve, with the same checks: the owner, that message, the time to read. It sits on a
+  row of its own, and the line under the box says which inputs it adds.
+- `keep` is called only once the checkpoint has taken the yes. If the checkpoint refuses (a changed action,
+  an expired request), nothing is trusted.
+- `keep` gets the values as stored, read with `cp.inputs(request_id)`, for the inputs that were offered and
+  no others. A plain Approve never calls it.
+- If `keep` fails, the yes stands and the phone says nothing was added. If `offer` fails, no such button is
+  sent.
+- An action too long to approve on a phone gets no trust button.
+- What gets trusted is your app's choice. A list that a single press can add to is a list an attacker would
+  like to be on: offer it only where you are willing to answer "yes, and from now on" in one tap.
 
 What to know:
 
@@ -742,18 +778,18 @@ a comparison with the approval steps built into agent frameworks.
 
 ## What has been checked
 
-All of this uses no model and costs nothing. Measured on 2026-11-17 and 2026-11-18, on macOS, on the source code of
-release 0.2.1 in this folder; the built package has a row of its own. Where a row was measured on
-the 0.2.0 or the 0.1.0 code, it says so.
+All of this uses no model and costs nothing. Measured on 2026-11-19, on macOS, on the code in this folder, which is newer than
+release 0.2.1 (Approve and trust, the narrow summary's mark, and asking again when a rule's reasons
+change). The built package has a row of its own. Where a row was measured on older code, it says so.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| The tests | `.venv/bin/pytest` | 5228 passed on Python 3.14.8 on 2026-11-18, with both extras installed (`claude` and `openai`). Not measured again on other versions or with no extras. On 2026-11-17, before the ready-made rules were added: 1119. For 0.2.0, on 2026-11-17: 1059 passed on 3.14.8. For 0.1.0, on 2026-11-15: 604 passed on 3.14.8 and 3.15.2; on 3.11.18, 603 passed and 1 was skipped (it needs 3.14); with neither extra, on 3.15.2, 598 passed and 6 were skipped. |
+| The tests | `.venv/bin/pytest` | 5420 passed on Python 3.14.8 on 2026-11-19, with both extras installed (`claude` and `openai`). Not measured again on other versions or with no extras. For release 0.2.1, on 2026-11-18: 5228. On 2026-11-17, before the ready-made rules were added: 1119. For 0.2.0, on 2026-11-17: 1059 passed on 3.14.8. For 0.1.0, on 2026-11-15: 604 passed on 3.14.8 and 3.15.2; on 3.11.18, 603 passed and 1 was skipped (it needs 3.14); with neither extra, on 3.15.2, 598 passed and 6 were skipped. |
 | The attack test's check of itself | `.venv/bin/python -m kettle.attacktest --self-check` | 8 of 8 checks held, on each of the two case sets (add `--cases fraud` for the second) |
-| Checkpoint and source trail broken on purpose | `.venv/bin/python checks/break_checkpoint.py` | 279 breaks tried, 279 caught by the tests |
+| Checkpoint and source trail broken on purpose | `.venv/bin/python checks/break_checkpoint.py` | 282 breaks tried, 282 caught by the tests |
 | Attack test broken on purpose | `.venv/bin/python checks/break_attacktest.py` | 107 breaks tried, 106 caught, 1 known and explained |
 | Adapters broken on purpose | `.venv/bin/python checks/break_adapters.py` | 43 breaks tried, 43 caught by the tests |
-| Telegram approver broken on purpose | `.venv/bin/python checks/break_telegram.py` | 198 breaks tried, 198 caught by the tests |
+| Telegram approver broken on purpose | `.venv/bin/python checks/break_telegram.py` | 214 breaks tried, 213 caught by the tests, 1 known and explained (a second check that the first one always answers first) |
 | Attacks on the yes | `.venv/bin/python -m kettle.attacktest --yes-set` | 25 tried: 23 stopped, 2 got through, both known limits (named above) |
 | Attacks on the yes broken on purpose | `.venv/bin/python checks/break_yes_set.py` | 65 breaks tried, 65 caught by the tests |
 | Browser demo broken on purpose | `.venv/bin/python checks/break_demo.py` | 43 breaks tried, 43 caught by the tests |
@@ -762,10 +798,11 @@ the 0.2.0 or the 0.1.0 code, it says so.
 | Previews read back | `.venv/bin/python checks/read_back.py` | 150,000 random records, each written at 78 and again at one narrower width (32 to 77, picked at random): 0 read back wrongly, no line longer than its width, no two different records sharing a preview |
 | The built package | see [RELEASING.md](https://github.com/engineerjames44/kettle-core/blob/main/RELEASING.md) | For 0.2.1, on 2026-11-19: the wheel and the source archive build from a clean copy of the committed files, and the wheel installed by itself into an empty environment on Python 3.11.18, 3.14.8 and 3.15.2 passes the self-check on both case sets and gives the same 25 tried, 23 stopped on the attacks on the yes. After the upload the same day, the files on PyPI were byte for byte the ones built, and `pip install kettle-labs==0.2.1` from PyPI into an empty environment on the same three Python versions passed the same checks with the same counts. For 0.2.0, on 2026-11-17: the wheel and the source archive build from a clean copy of the committed files, and the wheel installed by itself into an empty environment on Python 3.11.18, 3.14.8 and 3.15.2 passes the self-check on both case sets and gives the same 25 tried, 23 stopped on the attacks on the yes. After the upload the same evening, `pip install kettle-labs==0.2.0` from PyPI into an empty environment on the same three Python versions passed the same checks with the same counts. For 0.1.0, on 2026-11-16, `pip install kettle-labs` from PyPI into an empty environment on Python 3.14.8 passed the two self-checks |
 
-- **The tests.** 4108 came with the ready-made rules in `src/kettle/rules.py`: for those rules, the hold in
-  `src/kettle/holds.py`, the commands that check the attack test's own numbers, and more cases for the source
-  trail and the attack test. All are new since 0.2.0 and not described in this README yet.
-  Of the rest, 434 are for the checkpoint, 301 for the attack test, 64 for the adapters, 211 for the
+- **The tests.** 4283 came with the ready-made rules in `src/kettle/rules.py` and the work on them since: for
+  those rules, the hold in `src/kettle/holds.py`, asking again when a rule's reasons change, the published
+  coding-agent tricks, the commands that check the attack test's own numbers, and more cases for the source
+  trail and the attack test. All are new since 0.2.0 and most are not described in this README yet.
+  Of the rest, 435 are for the checkpoint, 301 for the attack test, 64 for the adapters, 227 for the
   Telegram approver, 39 for the attacks on the yes, 25 for the browser demo and 31 for the receipts. 8 run
   the examples and 7 check that the tests stay on this machine. Of the checkpoint's, the 102 in
   `tests/test_fixed_ways_around.py` are the ones that try a way around it (a changed action, a reused or

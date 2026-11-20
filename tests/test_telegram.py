@@ -33,6 +33,10 @@ from kettle.telegram import (
     NO_TOKEN,
     NOT_HERE,
     NOT_OPEN,
+    NOT_TRUSTED,
+    HOW_TO_TRUST,
+    TRUST,
+    TRUSTED,
     NOT_YOURS,
     SENT_NOTE,
     TOKEN_NAME,
@@ -1546,3 +1550,172 @@ def test_the_command_runs_as_python_m_kettle_telegram():
     assert (done.returncode, done.stdout, done.stderr) == (2, NO_TOKEN + "\n", "")
     done = run_the_command("--token", "1234567890:given-on-the-command-line")
     assert (done.returncode, done.stdout, done.stderr) == (2, USAGE + "\n", "")
+
+
+# ---- Approve and trust ---------------------------------------------------------------
+
+
+@pytest.fixture
+def watched(cp, world):
+    """send_email with "to" watched, and one email held for it."""
+    cp.tool("send_email", world.send_email, level=NEEDS_YES, watch=["to"], replace=True)
+    decision = cp.request("send_email", dict(EMAIL))
+    assert decision.status == "held"
+    return decision
+
+
+def trusting(phone, offer=lambda item: ["to"], fail=False, **settings):
+    """An approver that offers trust for what offer names, and keeps what it is handed."""
+    kept = []
+
+    def keep(request_id, values):
+        if fail:
+            raise OSError("the list file cannot be written")
+        kept.append((request_id, values))
+
+    approver = phone(trust=offer, on_trust=keep, **settings)
+    approver.kept = kept
+    return approver
+
+
+def test_without_trust_there_is_no_third_button(cp, watched, telegram, phone):
+    phone()
+    (message,) = on_screen(telegram)
+    assert list(buttons(message)) == ["Approve", "Deny"] and "trust" not in message["text"]
+
+
+def test_trust_is_offered_on_a_row_of_its_own_and_the_box_says_what_it_adds(cp, watched, telegram, phone):
+    trusting(phone)
+    (message,) = on_screen(telegram)
+    rows = message["reply_markup"]["inline_keyboard"]
+    assert [[key["text"] for key in row] for row in rows] == [[APPROVE, DENY], [TRUST]]
+    line = HOW_TO + " " + HOW_TO_TRUST.format(what='the "to" in the box')
+    assert marked(message, "italic") == [line]
+    assert shown_preview(message) == watched.preview  # the box itself is the checkpoint's, unchanged
+
+
+def test_approve_and_trust_is_a_yes_and_hands_the_app_the_stored_value_once(cp, watched, world, telegram, phone):
+    approver = trusting(phone)
+    (message,) = on_screen(telegram)
+    answer = telegram.answer_to(telegram.press(message["message_id"], "trust"))
+    assert answer["text"] == TRUSTED.format(what='the "to" in the box')
+    assert state(cp, watched.request_id) == "approved" and world.risky() == []  # a yes is not a run
+    assert approver.kept == [(watched.request_id, {"to": EMAIL["to"]})]
+    assert telegram.answer_to(telegram.press(message["message_id"], "trust"))["text"] == NOT_OPEN  # a second press does nothing
+    assert approver.kept == [(watched.request_id, {"to": EMAIL["to"]})]
+    assert cp.run(watched.request_id).status == "ran" and world.risky() == [("send_email", EMAIL)]
+
+
+def test_a_plain_approve_or_a_deny_never_trusts_anything(cp, world, telegram, phone):
+    cp.tool("send_email", world.send_email, level=NEEDS_YES, watch=["to"], replace=True)
+    first = cp.request("send_email", dict(EMAIL))
+    second = cp.request("send_email", {"to": "pat@example.com", "body": "Hi"})
+    approver = trusting(phone)
+    one, two = on_screen(telegram, 2)
+    assert telegram.answer_to(telegram.press(one["message_id"], "Approve"))["text"].startswith("Approved")
+    assert telegram.answer_to(telegram.press(two["message_id"], "Deny"))["text"].startswith("Denied")
+    assert {state(cp, first.request_id), state(cp, second.request_id)} == {"approved", "denied"}
+    assert approver.kept == []
+
+
+def test_a_yes_the_checkpoint_refuses_trusts_nothing(cp, watched, clock, world, telegram, phone):
+    approver = trusting(phone)
+    (message,) = on_screen(telegram)
+    clock.forward(601)  # expired before the press
+    answer = telegram.answer_to(telegram.press(message["message_id"], "trust"))
+    assert not answer["text"].startswith("Approved")
+    assert state(cp, watched.request_id) == "expired" and approver.kept == [] and world.risky() == []
+
+
+def test_a_swapped_action_is_refused_and_its_values_are_not_trusted(cp, watched, world, telegram, phone, db_path):
+    approver = trusting(phone)
+    (message,) = on_screen(telegram)
+    trust = buttons(message)["trust"]
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("UPDATE requests SET record = ?, fingerprint = ? WHERE id = ?", (THIEF.canonical, THIEF.fingerprint, watched.request_id))
+    answer = telegram.answer_to(telegram.press(message["message_id"], data=trust))
+    assert "different action" in answer["text"]
+    assert approver.kept == [] and state(cp, watched.request_id) != "approved"
+
+
+def test_trust_too_soon_does_not_count(cp, watched, telegram, phone):
+    tick = Tick()
+    approver = trusting(phone, min_read_seconds=2.0, clock=tick)
+    (message,) = on_screen(telegram)
+    assert telegram.answer_to(telegram.press(message["message_id"], "trust"))["text"] == TOO_SOON
+    assert state(cp, watched.request_id) == "held" and approver.kept == []
+    tick.now += 2.0
+    assert telegram.answer_to(telegram.press(message["message_id"], "trust"))["text"].startswith("Approved, and")
+    assert len(approver.kept) == 1
+
+
+def test_trust_is_offered_only_for_watched_inputs_and_none_means_no_button(cp, watched, telegram, phone):
+    approver = trusting(phone, offer=lambda item: ["body", "nope", 7])  # none of these is a watched input
+    (message,) = on_screen(telegram)
+    assert list(buttons(message)) == ["Approve", "Deny"]
+    forged = "t:" + buttons(message)["Approve"][2:]
+    assert telegram.answer_to(telegram.press(message["message_id"], data=forged))["text"] == NOT_OPEN
+    assert state(cp, watched.request_id) == "held" and approver.kept == []
+
+
+def test_the_app_is_shown_the_held_action_and_chooses_per_action(cp, world, telegram, phone):
+    cp.tool("send_email", world.send_email, level=NEEDS_YES, watch=["to"], replace=True)
+    seen = []
+
+    def offer(item):
+        seen.append((item["tool"], item["watched"]))
+        return ["to"] if "stranger" in item["preview"] else []
+
+    cp.request("send_email", {"to": "stranger@example.net", "body": "Hi"})
+    cp.request("send_email", dict(EMAIL))
+    trusting(phone, offer=offer)
+    messages = on_screen(telegram, 2)
+    offered = {"stranger@example.net" in message["text"]: "trust" in buttons(message) for message in messages}
+    assert offered == {True: True, False: False}
+    assert seen == [("send_email", ["to"]), ("send_email", ["to"])]
+
+
+def test_a_broken_trust_function_offers_nothing_and_approve_still_works(cp, watched, telegram, phone):
+    def broken(item):
+        raise RuntimeError("bug in the app")
+
+    approver = trusting(phone, offer=broken)
+    (message,) = on_screen(telegram)
+    assert list(buttons(message)) == ["Approve", "Deny"]
+    assert any("trust function failed" in line for line in approver.problems)
+    assert telegram.answer_to(telegram.press(message["message_id"], "Approve"))["text"].startswith("Approved")
+
+
+def test_when_the_app_cannot_take_what_was_trusted_the_yes_stands_and_says_so(cp, watched, world, telegram, phone):
+    approver = trusting(phone, fail=True)
+    (message,) = on_screen(telegram)
+    assert telegram.answer_to(telegram.press(message["message_id"], "trust"))["text"] == NOT_TRUSTED
+    assert state(cp, watched.request_id) == "approved" and approver.kept == []
+    assert any("could not take what was trusted" in line for line in approver.problems)
+    assert "the list file" not in " ".join(approver.problems)  # the app's error is not passed on
+    assert cp.run(watched.request_id).status == "ran"
+
+
+def test_an_action_too_long_for_the_phone_gets_no_trust_button(cp, world, telegram, phone):
+    cp.tool("send_email", world.send_email, level=NEEDS_YES, watch=["to"], replace=True)
+    decision = cp.request("send_email", dict(LONG))
+    approver = trusting(phone, max_parts=parts_needed(decision) - 1)
+    (message,) = on_screen(telegram)
+    assert list(buttons(message)) == ["Deny"]
+    forged = "t:" + buttons(message)["Deny"][2:]
+    assert telegram.answer_to(telegram.press(message["message_id"], data=forged))["text"] == NOT_OPEN
+    assert state(cp, decision.request_id) == "held" and approver.kept == []
+
+
+@pytest.mark.parametrize("settings", [{"trust": lambda item: ["to"]}, {"on_trust": lambda request_id, values: None}, {"trust": "to", "on_trust": print}])
+def test_trust_and_on_trust_come_together_as_functions(cp, telegram, settings):
+    with pytest.raises(TelegramError, match="come together"):
+        TelegramApprover(cp, token=telegram.token, chat_id=OWNER, api=telegram.api, **settings)
+
+
+def test_the_button_names_neither_the_request_nor_the_values(cp, watched, telegram, phone):
+    trusting(phone)
+    (message,) = on_screen(telegram)
+    data = buttons(message)["trust"]
+    assert data.startswith("t:") and watched.request_id not in data and "sam" not in data and watched.fingerprint[:8] not in data
+    assert data[2:] == buttons(message)["Approve"][2:]  # the same random code as its Approve, kept in memory

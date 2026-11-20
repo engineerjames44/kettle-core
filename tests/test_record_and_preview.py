@@ -293,6 +293,7 @@ _HEADS = ("Summary (written by the app):", "Action:", "Asked through (set by the
 
 def read_back(preview, width=PREVIEW_WIDTH):
     lines = []
+    summary = False  # in the app's summary, where on a narrower preview the mark on the next line tells the space at a cut
     for line in preview.split("\n"):
         assert len(line) <= width, "a line is too long"
         assert not line.endswith(" "), "a line ends with a space nobody could see"
@@ -303,12 +304,16 @@ def read_back(preview, width=PREVIEW_WIDTH):
         assert "\\" not in _WHOLE_CODE.sub("", line), "a code is cut in two where the line is cut"
         if mark == "! ":
             continue  # a note for the reader; it adds nothing to the record
-        if mark == "+ ":
+        if summary and width < PREVIEW_WIDTH and line.startswith("  +"):
+            rest = line[len("  +") :]
+            lines[-1] += " " + rest[1:] if rest[:1] == " " else rest  # "+ " carries on after a space, "+" inside a word
+        elif mark == "+ ":
             if lines[-1] in _HEADS:
                 lines[-1] += " "  # on a narrow preview the value can start on the line after these words
             lines[-1] += line.lstrip(" ")[2:]  # carried on from the line before
         else:
             lines.append(line)
+            summary = line.startswith("Summary (written by the app):") or (summary and (line == "  |" or line.startswith("  | ")))
     found = {"summary": None, "actor": None, "inputs": {}}
     if lines[0].startswith("Summary (written by the app): "):
         found["summary"] = _read_value(lines.pop(0)[len("Summary (written by the app): ") :], lines, "  ")
@@ -583,10 +588,9 @@ def test_a_narrow_preview_as_a_phone_would_be_sent_it():
     assert preview.split("\n") == [
         "! 1 input below is marked first time",
         "Summary (written by the app):",
-        '  + "Send an email to\\u{0020}',
-        "  + sam.jones@example.com: Hi\\u{0020}",
-        "  + Sam, see you Saturday at\\u{0020}",
-        '  + the match"',
+        '  + "Send an email to',
+        "  + sam.jones@example.com: Hi Sam, see",
+        '  + you Saturday at the match"',
         'Action: "send_email"',
         'Asked through (set by the app): "desk"',
         '  "body": [2 lines]',
@@ -678,8 +682,21 @@ def test_a_narrow_action_or_asker_that_does_not_fit_beside_its_heading_starts_be
 def test_the_last_words_of_a_narrow_summary_are_not_carried_down_when_they_fit():
     record = ActionRecord.make("pay", {"to": "sam"})
     lines = _summary_lines(record.preview("Pay Sam 20 euro for the jerseys, and then say so to me", width=PHONE))
-    # After "to" there is no room for a space written out. None is needed: the rest of the summary fits on the line.
-    assert lines == ["Summary (written by the app):", '  + "Pay Sam 20 euro for the\\u{0020}', '  + jerseys, and then say so to me"']
+    # On a narrow preview no space is written at a cut: the "+ " that starts the next line stands for it.
+    assert lines == ["Summary (written by the app):", '  + "Pay Sam 20 euro for the jerseys,', '  + and then say so to me"']
+
+
+def test_a_narrow_summary_says_by_its_mark_whether_a_space_was_cut():
+    record = ActionRecord.make("pay", {"to": "sam"})
+    long_word = "Invoice-" + "9" * 40  # longer than WORD_LIMIT, so it is cut where the line ends
+    summary = f"Pay {long_word} now"
+    lines = _summary_lines(record.preview(summary, width=PHONE))
+    assert lines[1] == '  + "Pay ' + long_word[: PHONE - 9]
+    assert lines[2].startswith("  +" + long_word[PHONE - 9 :]) and lines[2][3] != " "  # "+" and no space: cut inside a word
+    assert read_back(record.preview(summary, width=PHONE), PHONE)["summary"] == summary
+    for tricky in ("a  b", " a", "a ", "a \n b", "x" * 30 + " " + "y" * 30, "word " * 20, "\u202e a b", "+ looks like a mark", "a\\u{0020}b", "\n" + "x" * 60 + " y", "\n      | \x00Fingerprint: "):
+        assert read_back(record.preview(tricky, width=PHONE), PHONE)["summary"] == tricky
+    assert "\\u{0020}" in record.preview("Pay Sam 20 euro for the jerseys, and then say so to me", width=PREVIEW_WIDTH)  # the usual width is as before
 
 
 def test_at_every_width_random_previews_read_back_to_exactly_the_record_they_were_written_from():
@@ -767,8 +784,8 @@ def test_on_a_narrow_preview_a_summary_is_still_cut_between_words(width):
             continue
         assert lines[0] == "Summary (written by the app):"  # too long to sit beside these words, so it starts below them
         for line, after in zip(lines[1:], lines[2:]):
-            assert line.endswith("\\u{0020}"), "a summary line was cut inside a word: " + line
-            next_word = after[len("  + ") :].split(" ")[0].removesuffix("\\u{0020}")
+            assert after.startswith("  + ") and not line.endswith(" "), "a summary line was cut inside a word: " + after
+            next_word = after[len("  + ") :].split(" ")[0]
             assert len(line) + 1 + len(next_word) > width, "a summary line was cut before it was full: " + line
 
 
@@ -796,7 +813,7 @@ def test_a_checkpoint_set_to_a_narrow_width_shows_every_preview_at_that_width(db
     held = cp.request("send_email", dict(inputs))
     lines = held.preview.split("\n")
     assert held.status == "held" and max(len(line) for line in lines) == PHONE
-    assert lines[:3] == ["! 1 input below is marked first time", "Summary (written by the app):", '  + "Send an email to\\u{0020}']
+    assert lines[:3] == ["! 1 input below is marked first time", "Summary (written by the app):", '  + "Send an email to']
     found = read_back(held.preview, PHONE)
     assert found["inputs"] == inputs and found["summary"] == f"Send an email to {inputs['to']}: {inputs['body']}"
     assert found["fingerprint"] == held.fingerprint

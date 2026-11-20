@@ -19,8 +19,8 @@ TRACE = "trail = self._trail.trace(found.watch, record.inputs(), now) if self._t
 NOT_FOUND = "if all(given or used for _, _, _, given, used in calls) and typed is not True and not any(listed for _, listed in lists):"
 LIST_CARRIED = "head = more"
 LIST_NAME = """written = ['"'] + _pieces(name, quoted=True) + ['"']"""
-CUT_SPACE = '            if last == " " and len(line) - 1 + len(last_space) <= width:\n                line = line[:-1] + last_space\n            elif last == " ":\n                line, lead = line[:-1], last_space'
-MEASURE = 'size = len(space) if fill and words and piece == " " and len(line) + left > room else len(piece)'
+CUT_SPACE = '                if last == " " and len(line) - 1 + len(last_space) <= width:\n                    line = line[:-1] + last_space\n                elif last == " ":\n                    line, lead = line[:-1], last_space'
+MARK = "(more if at_space else glued)"
 OWN_LINE = 'if head == "" and width < PREVIEW_WIDTH and len(head) + sum(map(len, label)) + len(gap) + sum(map(len, value)) > width:'
 NARROW_LIST = "if width < PREVIEW_WIDTH and len(head) + sum(map(len, written)) > width:"
 WIDTH_OK = "not MIN_PREVIEW_WIDTH <= preview_width <= PREVIEW_WIDTH"
@@ -70,7 +70,7 @@ MUTANTS = [
     ("leading space not written out", R, rep('alone = 0 < index < last and', 'alone = index < last and')),
     ("trailing space not written out", R, rep('alone = 0 < index < last and', 'alone = 0 < index and')),
     ("long lines not cut", R, rep('if count and len(line) + size > room:', 'if False:')),
-    ("a cut line may end in a bare space", R, rep(CUT_SPACE, '            if False:\n                pass')),
+    ("a cut line may end in a bare space", R, rep(CUT_SPACE, '                if False:\n                    pass')),
     ("a summary is cut inside a word", R, rep('summary, "  ", words=True, width=width)', 'summary, "  ", width=width)')),
     ("a line of a block summary is cut inside a word", R, rep('more, words=words, width=width) if part', 'more, width=width) if part')),
     ("a word of any length is carried down", R, rep('len(line) - word_at <= WORD_LIMIT', 'True')),
@@ -272,9 +272,12 @@ MUTANTS = [
     ("the space where a filled line is cut is dropped", R, rep('line, lead = line[:-1], last_space', 'line, lead = line[:-1], ""')),
     ("a space written out at the end of a filled line may run past the width", R, rep('if last == " " and len(line) - 1 + len(last_space) <= width:', 'if last == " ":')),
     ("on a narrow preview the space at a cut always starts the next line", R, rep('if last == " " and len(line) - 1 + len(last_space) <= width:', 'if last == " " and not fill:')),
-    ("a narrow summary's spaces are not given the room to be written out", R, rep(MEASURE, 'size = len(piece)')),
-    ("the last words of a narrow summary are carried down though they fit", R, rep(MEASURE, 'size = len(space) if fill and words and piece == " " else len(piece)')),
-    ("a narrow value's spaces are given room like a summary's", R, rep(MEASURE, MEASURE.replace("fill and words and", "fill and"))),
+    ("a narrow summary cut at a space carries on as if cut inside a word", R, rep(MARK, "glued")),
+    ("a narrow summary cut inside a word carries on as if cut at a space", R, rep(MARK, "more")),
+    ("the space a narrow summary is cut at is left at the end of the line too", R, rep('lines.append(line[:-1] if last == " " else line)', "lines.append(line)")),
+    ("a word that fits a narrow summary line exactly is carried down", R, rep(' and not (implied and piece == " ")', "")),
+    ("a narrow value is cut like a summary, with no space written at a cut", R, rep("implied = fill and words", "implied = fill")),
+    ("at the usual width a summary is cut with the narrow summary's mark", R, rep("implied = fill and words", "implied = words")),
     ("a narrow summary that does not fit beside its heading starts there anyway", R, rep(OWN_LINE, 'if False:')),
     ("a narrow summary always starts under its heading", R, rep(OWN_LINE, 'if head == "" and width < PREVIEW_WIDTH:')),
     ("at the usual width a long summary starts under its heading", R, rep(OWN_LINE, OWN_LINE.replace("width < PREVIEW_WIDTH and ", ""))),
@@ -310,7 +313,7 @@ MUTANTS = [
     ("text inputs are written for the usual width", R, rep('_text_lines("  ", label, value, "      ", noted=key, width=width)', '_text_lines("  ", label, value, "      ", noted=key)')),
     ("inputs that are not text are written for the usual width", R, rep('_json_lines("  ", label, value, "      ", noted=key, width=width)', '_json_lines("  ", label, value, "      ", noted=key)')),
     ("one-line text is cut for the usual width", R, rep('lines = _fold(head, label + [gap + value[0]] + value[1:], more, words=words, width=width)', 'lines = _fold(head, label + [gap + value[0]] + value[1:], more, words=words)')),
-    ("a summary under its heading is cut for the usual width", R, rep('_fold(more, value, more, words=True, width=width)', '_fold(more, value, more, words=True)')),
+    ("a summary under its heading is cut for the usual width", R, rep('_fold(more, value, more, words=words, width=width)', '_fold(more, value, more, words=words)')),
     ("the first line of a block is cut for the usual width", R, rep('[f"{gap}[{len(parts)} lines]"], more, width=width)', '[f"{gap}[{len(parts)} lines]"], more)')),
     ("the lines of a block are cut for the usual width", R, rep('more, words=words, width=width) if part', 'more, words=words) if part')),
     ("a value that is not text is cut for the usual width", R, rep('json_from=len(label), width=width)', 'json_from=len(label))')),

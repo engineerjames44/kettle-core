@@ -197,8 +197,11 @@ class ActionRecord:
 #     A screen that shows fewer characters than that on a line wraps them all the
 #     same, so the preview can be asked for at the width the screen has.
 #   - The app's summary is the one thing a person reads as a sentence, so it is cut
-#     between words where it can be. The space at the cut is written out like any
-#     other space at the end of a line, so the summary still reads back exactly.
+#     between words where it can be. At the usual width the space at the cut is
+#     written out like any other space at the end of a line. On a narrower preview
+#     it is not written at all: a summary line that carries on after "+ " carries on
+#     after a space, and one that carries on after "+" with nothing after it was cut
+#     inside a word. Either way the summary reads back exactly.
 #   - Text from inside a value only ever appears after a quote, a "|" or a "+".
 
 WORD_LIMIT = 24  # a word longer than this is cut where the line ends, not carried down whole
@@ -251,28 +254,41 @@ def _fold(
     ends is written out at the start of the next line. With words, a space is only
     put on a line that has the room, so a line cut between words ends with it. The
     room is not needed once all that is left fits on the line.
+
+    With words on a narrower preview, the space at a cut is not written at all. The
+    next line starts with `more` when the cut was at a space, and with `more` less
+    its last space ("+" alone before the text) when the cut was inside a word.
     """
     fill = width < PREVIEW_WIDTH
+    implied = fill and words  # the space at a cut is told by the mark on the next line, not written
+    glued = more.rstrip(" ")
     room = width if fill else width - len(_SPACE)
     left = sum(map(len, pieces))  # how long the pieces not yet written are
     lines, line, count, last, last_space = [], head, 0, "", _SPACE
     word_at, word_space = 0, _SPACE  # with words: where in the line the word being written starts (0: none to carry)
     for index, piece in enumerate(pieces):
         space = _SPACE if json_from is None or index < json_from else _JSON_SPACE
-        size = len(space) if fill and words and piece == " " and len(line) + left > room else len(piece)
+        size = len(piece)
         left -= len(piece)
         if count and len(line) + size > room:
             carried, lead = "", ""
             fits = len(more) + len(line) - word_at + size <= room  # the carried word and this piece, on the next line
-            if words and word_at and last != " " and len(line) - word_at <= WORD_LIMIT and fits:
+            if words and word_at and last != " " and len(line) - word_at <= WORD_LIMIT and fits and not (implied and piece == " "):
                 carried, line, last, last_space = line[word_at:], line[:word_at], " ", word_space
-            if last == " " and len(line) - 1 + len(last_space) <= width:
-                line = line[:-1] + last_space
-            elif last == " ":
-                line, lead = line[:-1], last_space
-            lines.append(line)
-            line, count = more + lead + carried, 1 if carried else 0
-            word_at = 0
+            if implied:
+                at_space = last == " " or piece == " "
+                lines.append(line[:-1] if last == " " else line)
+                line, count, word_at = (more if at_space else glued) + carried, 1 if carried else 0, 0
+                if piece == " ":  # the cut falls on this space (no word is carried down then), and the mark on the new line stands for it
+                    continue
+            else:
+                if last == " " and len(line) - 1 + len(last_space) <= width:
+                    line = line[:-1] + last_space
+                elif last == " ":
+                    line, lead = line[:-1], last_space
+                lines.append(line)
+                line, count = more + lead + carried, 1 if carried else 0
+                word_at = 0
         if count == 0 and lines and piece[:1] == " ":
             piece = space if piece == " " else piece[1:]
         line += piece
@@ -455,7 +471,7 @@ def _text_lines(head: str, label: list[str], text: str, indent: str, noted: str 
         if head == "" and width < PREVIEW_WIDTH and len(head) + sum(map(len, label)) + len(gap) + sum(map(len, value)) > width:
             # On a narrow preview, a value that does not fit beside its heading (the summary, the action, who asked)
             # starts on a line of its own.
-            lines = [head + "".join(label)] + _fold(more, value, more, words=True, width=width)
+            lines = [head + "".join(label)] + _fold(more, value, more, words=words, width=width)
         else:
             lines = _fold(head, label + [gap + value[0]] + value[1:], more, words=words, width=width)
     else:
