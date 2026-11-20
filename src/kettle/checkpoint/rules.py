@@ -96,6 +96,16 @@ def _read_watch(name: str, watch: Any, signature: Optional[inspect.Signature], f
     return tuple(sorted(set(watch)))
 
 
+MAX_REASON = 300  # the longest reason the log keeps in full
+
+
+def _kept_reason(reason: str) -> str:
+    if len(reason) <= MAX_REASON:
+        return reason
+    mark = " [cut, #" + hashlib.sha256(reason.encode("utf-8", "surrogatepass")).hexdigest()[:12] + "]"
+    return reason[: MAX_REASON - len(mark)] + mark
+
+
 class Rules:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
@@ -153,6 +163,25 @@ class Rules:
         if level != NEVER and tool.run is None:
             raise Refused(f"{tool.name} has nothing to run")
         return level
+
+    def reasons_for(self, tool: Tool, inputs: dict) -> list[str]:
+        """Why the tool's level asks, in the rule's own words, sorted. Raises Refused if the rule fails.
+
+        Only a level that can say gives any: a ready-made rule or a Hold, through
+        reasons_in(). FREE, NEEDS_YES, NEVER and a plain function give none.
+        A reason longer than MAX_REASON is cut, with a mark made from all of it,
+        so two long reasons that differ near the end are still two reasons.
+        """
+        reasons_in = getattr(tool.level, "reasons_in", None)
+        if not callable(reasons_in):
+            return []
+        try:
+            reasons = reasons_in(inputs)
+        except Exception as error:
+            raise Refused(f"the rule for {tool.name} failed ({type(error).__name__})") from None
+        if type(reasons) not in (tuple, list) or any(type(reason) is not str for reason in reasons):
+            raise Refused(f"the rule for {tool.name} did not give its reasons as text")
+        return sorted({_kept_reason(reason) for reason in reasons})
 
     def check_fits(self, tool: Tool, inputs: dict) -> None:
         """Refuse inputs the tool's function could not be called with."""

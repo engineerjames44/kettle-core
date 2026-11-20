@@ -435,7 +435,7 @@ MUTANTS = [
     ("private: .env after an = is not seen", R, one('pieces = re.split(r"[/=:,]", text)', 'pieces = re.split(r"[/:,]", text)')),
     ("private: .env after a : is not seen", R, one('pieces = re.split(r"[/=:,]", text)', 'pieces = re.split(r"[/=,]", text)')),
     ("private: .env after a , is not seen", R, one('pieces = re.split(r"[/=:,]", text)', 'pieces = re.split(r"[/=:]", text)')),
-    ("private: capital letters in a private name are not folded", R, one("    text = word.text.lower()\n    pieces = re.split", "    text = word.text\n    pieces = re.split")),
+    ("private: capital letters in a private name are not folded", R, one("    text = word.text.lower()\n    on_the_way", "    text = word.text\n    on_the_way")),
     ("private: the usual key folders and files are not known", R, one("    if any(name in text for name in _SECRET_NAMES) or text.endswith(_SECRET_ENDINGS):\n", "    if text.endswith(_SECRET_ENDINGS):\n")),
     ("private: a key file is not known by its ending", R, one("    if any(name in text for name in _SECRET_NAMES) or text.endswith(_SECRET_ENDINGS):\n", "    if any(name in text for name in _SECRET_NAMES):\n")),
     ("private: a key ending in the middle of a name is taken for a key file", R, one("text.endswith(_SECRET_ENDINGS)", "any(ending in text for ending in _SECRET_ENDINGS)")),

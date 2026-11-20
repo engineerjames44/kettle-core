@@ -111,6 +111,16 @@ class Transaction:
         )
         return cursor.rowcount == 1
 
+    def held_detail(self, request_id: str) -> Any:
+        """What the log kept when this request was held: a dict, or None if there is no readable entry."""
+        row = self._connection.execute(
+            "SELECT detail FROM log WHERE request_id = ? AND event = 'held' ORDER BY seq LIMIT 1", (request_id,)
+        ).fetchone()
+        try:
+            return json.loads(row["detail"]) if row else None
+        except (ValueError, TypeError):
+            return None
+
     def seen(self, mark: str) -> bool:
         return self._connection.execute("SELECT 1 FROM seen WHERE mark = ?", (mark,)).fetchone() is not None
 

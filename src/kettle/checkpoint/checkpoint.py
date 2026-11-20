@@ -13,6 +13,7 @@ request(). That is the builder's job; see the README.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import hmac
 import json
@@ -211,6 +212,7 @@ class Checkpoint:
             self._trail.asked(inputs)  # whatever comes of the call: a value the agent has used is no longer news from a later result
         try:
             found, record, level = self._decide(tool, inputs, actor)
+            reasons = self._rules.reasons_for(found, record.inputs()) if level != FREE else []
         except (Refused, RecordError) as error:
             self._log_quietly("refused", tool=_clip(tool), detail={"reason": _clip(str(error), 500)})
             return Decision(REFUSED, f"Refused: {error}. Nothing was run.", tool=tool_name)
@@ -234,7 +236,7 @@ class Checkpoint:
                     trail = self._trail.trace(found.watch, record.inputs(), now) if self._trail is not None else []
                     preview = record.preview(summary, first_time, trail, self._preview_width)
                     tx.insert_request(request_id, record.fingerprint, record.canonical, now, expires_at)
-                    detail = {"expires_at": expires_at, "rules": self._rules.digest()}
+                    detail = {"expires_at": expires_at, "rules": self._rules.digest(), "reasons": reasons}
                     if found.watch:
                         detail["first_time"] = sorted(first_time)
                     if trail:
@@ -278,7 +280,7 @@ class Checkpoint:
                     return Decision(REFUSED, "Refused: that request has expired.", tool=tool, request_id=request_id)
                 try:
                     record = self._stored_record(row)
-                    self._recheck(record)
+                    self._same_reasons(tx, request_id, self._recheck(record), record)
                 except (Refused, RecordError) as error:
                     tx.move(request_id, ("held",), "cancelled", note=str(error))
                     tx.log(now, "cancelled", request_id, tool, row["fingerprint"], {"reason": str(error)})
@@ -349,6 +351,7 @@ class Checkpoint:
                     if not _same(row["approved_fingerprint"], record.fingerprint):
                         raise Refused("the yes was given for a different action")
                     found = self._recheck(record)
+                    self._same_reasons(tx, request_id, found, record)
                 except (Refused, RecordError) as error:
                     tx.move(request_id, ("approved",), "cancelled", note=str(error))
                     tx.log(now, "cancelled", request_id, tool, row["fingerprint"], {"reason": str(error)})
@@ -428,6 +431,23 @@ class Checkpoint:
             "note": row["note"],
         }
 
+    def inputs(self, request_id: str) -> Optional[dict]:
+        """A copy of the inputs of that request as stored, or None if there is no such request or its stored record does not match its fingerprint.
+
+        Owner side only: for an approver that shows the owner a value and then hands
+        it to the app, such as a button that adds an address to the app's own list.
+        Keep it out of anything the model can call, as with status() and run(). It is
+        not on the Gate.
+        """
+        rows = self._store.read("SELECT * FROM requests WHERE id = ?", (request_id,)) if type(request_id) is str else []
+        if not rows:
+            return None
+        try:
+            record = self._stored_record(rows[0])
+        except (Refused, RecordError):
+            return None
+        return copy.deepcopy(record.inputs())
+
     def needs_checking(self, older_than: float = 60.0) -> list[dict]:
         """Approved actions that were started and whose outcome is not known.
 
@@ -471,6 +491,26 @@ class Checkpoint:
             raise _never(found, record)
         self._rules.check_fits(found, record.inputs())
         return found
+
+    def _same_reasons(self, tx: Any, request_id: str, found: Tool, record: ActionRecord) -> None:
+        """Refuse if the rule now gives a reason to ask that it did not give when the owner was asked.
+
+        The owner said yes to what the card showed. If a link now leads somewhere
+        else, or a list changed, the rule's reasons change, and that yes is not
+        for this. Reasons that went away do not refuse. A request held by an
+        older version, which kept no reasons, is not compared.
+        """
+        held = tx.held_detail(request_id)
+        if type(held) is not dict:
+            raise Refused("the log has no readable entry for when the owner was asked")
+        if "reasons" not in held:
+            return
+        kept = held["reasons"]
+        if type(kept) is not list or any(type(reason) is not str for reason in kept):
+            raise Refused("the log's entry for when the owner was asked cannot be read")
+        new = [reason for reason in self._rules.reasons_for(found, record.inputs()) if reason not in kept]
+        if new:
+            raise Refused(_clip("what the rule sees changed since the owner was asked (now: " + "; ".join(new) + "). Ask again", 500))
 
     def _stored_record(self, row: Any) -> ActionRecord:
         record = ActionRecord.from_canonical(row["record"])

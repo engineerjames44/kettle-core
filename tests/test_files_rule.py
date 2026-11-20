@@ -74,6 +74,11 @@ def rule(does, **settings):
     return rules.files(settings.pop("folders", ["~/Projects/my-app"]), does=does, **settings)
 
 
+def leads(place):
+    """The reason that says where a link really leads, which comes first when a path through a link asks."""
+    return f"it really leads to {place}"
+
+
 def look(does, path, **settings):
     return rule(does, **settings).explain({"path": path})
 
@@ -218,30 +223,30 @@ def test_reading_is_allowed_in_the_read_only_folders_and_changing_is_not(home):
 
 @pytest.mark.parametrize("does", DOES)
 def test_a_link_that_leads_out_of_the_folder_asks_and_says_it_is_a_link(home, does):
-    asks(does, "docs/tax.txt", [LINK])
-    asks(does, "~/Projects/my-app/docs/tax.txt", [LINK])
+    asks(does, "docs/tax.txt", [leads("~/Documents/tax.txt"), LINK])
+    asks(does, "~/Projects/my-app/docs/tax.txt", [leads("~/Documents/tax.txt"), LINK])
 
 
 def test_the_place_is_worked_out_from_the_path_as_given(home):
     # docs is a link to ~/Documents, so docs/.. is the home folder and not the project
     for does in DOES:
-        asks(does, "docs/../x.txt", [LINK])
+        asks(does, "docs/../x.txt", [leads("~/x.txt"), LINK])
     free("read", "docs/specs/a.md")  # the link leads to a folder that may be read
-    asks("write", "docs/specs/a.md", [LINK])
+    asks("write", "docs/specs/a.md", [leads("~/Documents/specs/a.md"), LINK])
     free("write", "same/../README.md")
 
 
 def test_a_link_out_of_the_folder_for_reading_is_said_to_be_a_link(home):
     os.symlink(os.path.join(home, "Documents", "tax.txt"), os.path.join(home, "Documents", "specs", "more"))
-    asks("read", "~/Documents/specs/more", [LINK])
-    asks("write", "~/Documents/specs/more", [OUTSIDE])
+    asks("read", "~/Documents/specs/more", [leads("~/Documents/tax.txt"), LINK])
+    asks("write", "~/Documents/specs/more", [leads("~/Documents/tax.txt"), OUTSIDE])
 
 
 def test_a_link_into_a_system_folder_or_a_key_folder_is_judged_as_that_place(home):
-    asks("read", "out/hosts", [LINK])
+    asks("read", "out/hosts", [leads(os.path.realpath("/etc/hosts")), LINK])
     never("write", "out/hosts", [SYSTEM])
     never("delete", "out/hosts", [SYSTEM])
-    asks("read", "keys/config", [KEYS, LINK])
+    asks("read", "keys/config", [leads("~/.ssh/config"), KEYS, LINK])
     never("write", "keys/authorized_keys", [KEYS])
     never("delete", "keys/known_hosts", [KEYS])
 
@@ -324,7 +329,7 @@ def test_a_link_with_the_name_of_a_key_file_asks_wherever_it_leads(home):
     app = os.path.join(home, "Projects", "my-app")
     os.symlink(os.path.join(app, "src", "app.py"), os.path.join(app, ".env.local"))
     for does in DOES:
-        asks(does, ".env.local", [KEYS])
+        asks(does, ".env.local", [leads("~/Projects/my-app/src/app.py"), KEYS])
 
 
 def test_the_contents_of_a_file_reached_past_its_name_ask(home):
@@ -379,7 +384,7 @@ def test_a_path_that_only_looks_like_the_protected_one_before_links_are_followed
     for does in CHANGES:
         never(does, "docs/../kettle.db", [PROTECTED])
         never(does, f"/{home}/Projects/my-app/docs/../kettle.db", [PROTECTED])
-    asks("read", "docs/../kettle.db", [PROTECTED, LINK])
+    asks("read", "docs/../kettle.db", [leads("~/kettle.db"), PROTECTED, LINK])
 
 
 def test_a_protected_folder_covers_what_is_in_it_and_no_more(home):
@@ -441,7 +446,7 @@ def test_the_home_folder_reached_through_a_link_is_never_deleted(home):
     # and a path that is the home folder until links are followed: a tool might tidy it first
     os.symlink(os.path.join(home, "Projects", "my-app", "src"), os.path.join(home, "lnk"))
     never("delete", "~/lnk/..", [WHOLE])
-    asks("delete", "~/lnk/../src", [FOLDER])
+    asks("delete", "~/lnk/../src", [leads("~/Projects/my-app/src"), FOLDER])
 
 
 def test_a_home_folder_that_is_named_through_a_link_is_still_known(home, monkeypatch):
@@ -502,14 +507,14 @@ def test_changing_a_file_that_runs_when_a_shell_or_git_starts_asks(home, name):
 def test_a_link_into_a_folder_other_tools_obey_is_seen(home):
     os.makedirs(os.path.join(home, "Projects", "my-app", ".git", "hooks"))
     os.symlink(os.path.join(home, "Projects", "my-app", ".git", "hooks"), os.path.join(home, "Projects", "my-app", "tools"))
-    asks("write", "tools/pre-commit", [RUNS_ITSELF])
+    asks("write", "tools/pre-commit", [leads("~/Projects/my-app/.git/hooks/pre-commit"), RUNS_ITSELF])
     free("read", "tools/pre-commit")
 
 
 def test_a_link_with_the_name_of_a_folder_other_tools_obey_is_seen(home):
     os.symlink(os.path.join(home, "Projects", "my-app", "src"), os.path.join(home, "Projects", "my-app", ".husky"))
-    asks("write", ".husky/pre-commit", [RUNS_ITSELF])
-    asks("delete", ".husky/pre-commit", [RUNS_ITSELF])
+    asks("write", ".husky/pre-commit", [leads("~/Projects/my-app/src/pre-commit"), RUNS_ITSELF])
+    asks("delete", ".husky/pre-commit", [leads("~/Projects/my-app/src/pre-commit"), RUNS_ITSELF])
     free("read", ".husky/pre-commit")
 
 
@@ -519,7 +524,7 @@ def test_a_link_with_the_name_of_a_folder_other_tools_obey_is_seen(home):
 def test_deleting_a_whole_folder_asks(home):
     asks("delete", "src", [FOLDER])
     asks("delete", "~/Projects/my-app", [FOLDER])
-    asks("delete", "same", [FOLDER])  # a link to a folder
+    asks("delete", "same", [leads("~/Projects/my-app/src"), FOLDER])  # a link to a folder
     asks("delete", "not-there/", [FOLDER])  # written as a folder
     free("delete", "not-there")
     free("delete", "src/app.py")

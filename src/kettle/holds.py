@@ -143,6 +143,14 @@ class _Over(Rule):
             return Verdict(NEEDS_YES, added)
         return Verdict(NEEDS_YES, tuple(dict.fromkeys(under.reasons + added)))
 
+    def reasons_in(self, inputs: dict) -> tuple:
+        """The level's own reasons. The Hold's are left out: they come from what was read, not from this action,
+        so text read while the owner decides does not cancel a yes for an action that has not changed."""
+        inner = self._inner
+        if isinstance(inner, Rule):
+            return inner.reasons_in(inputs)
+        return ()
+
     def _under(self, inputs: dict) -> Verdict:
         inner = self._inner
         if isinstance(inner, Rule):

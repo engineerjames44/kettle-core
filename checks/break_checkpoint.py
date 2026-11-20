@@ -40,7 +40,7 @@ MUTANTS = [
     ("both stored checks off", C, rep('if not _same(row["fingerprint"], record.fingerprint):', 'if False:', 'if not _same(row["approved_fingerprint"], record.fingerprint):', 'if False:')),
     ("non-canonical stored text accepted", R, rep('if record.canonical != canonical:', 'if False:')),
     ("free tool runs even if the log cannot be written", C, rep('        except Exception as error:\n            return self._broken(error, tool_name)\n        return self._execute(found, record, None)', '        except Exception as error:\n            pass\n        return self._execute(found, record, None)')),
-    ("no re-check of the rules at run", C, rep('found = self._recheck(record)\n                except', 'found = self._rules.find(record.tool)\n                except')),
+    ("no re-check of the rules at run", C, rep('found = self._recheck(record)\n                    self._same_reasons', 'found = self._rules.find(record.tool)\n                    self._same_reasons')),
     ("no re-check, and removed tools kept", C, rep('self._rules.remove(name)', 'pass')),
     ("dict subclasses accepted", R, rep('if kind is dict:', 'if isinstance(value, dict):', 'if type(inputs) is not dict:', 'if not isinstance(inputs, dict):')),
     ("never tools can be held", C, lambda t: nth(t, 'if level == NEVER:', 'if False:', 1)),

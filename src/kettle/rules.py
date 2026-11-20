@@ -109,6 +109,16 @@ class Rule:
         reasons = tuple(dict.fromkeys(reason for found_level, reason in found if found_level == level))
         return Verdict(level, reasons)
 
+    def reasons_in(self, inputs: dict) -> tuple:
+        """The reasons to ask that come from the inputs and where they lead.
+
+        The checkpoint keeps these when it holds an action, and asks again for them
+        at the yes and at the run: a reason that was not there when the owner was
+        asked cancels the yes. For a ready-made rule they are the reasons explain()
+        gives.
+        """
+        return self.explain(inputs).reasons
+
     def why(self, inputs: dict) -> str:
         verdict = self.explain(inputs)
         if verdict.level == FREE:
@@ -1417,6 +1427,9 @@ def _other_command(name: str, texts: list, piped: bool) -> str:
 
 def _secret_place(word: _Word) -> bool:
     text = word.text.lower()
+    on_the_way = [piece for piece in text.split("/") if piece]
+    if "proc" in on_the_way and on_the_way[-1] in _PROC_SECRETS:
+        return True
     pieces = re.split(r"[/=:,]", text)
     if any(piece == ".env" or piece == ".envrc" or piece.startswith(".env.") for piece in pieces):
         return True
@@ -1584,6 +1597,8 @@ _F_PATTERN = "the path holds a pattern, and this rule does not work out which fi
 _F_RELATIVE = "the path does not start from / or ~, and the rule was not told which folder the tool starts in"
 _F_OUTSIDE = "the path is outside the folders you allow"
 _F_LINK = "a link on the way leads outside the folders you allow"
+_F_LEADS = "it really leads to {}"
+MAX_PLACE = 120  # the longest place a reason writes out
 _F_READ_ONLY = "you allow reading there, not changing it"
 _F_KEYS = "it is a place where keys and passwords are kept"
 _F_PROTECTED = "it is one of the paths you protect"
@@ -1601,8 +1616,17 @@ _KEY_PIECES = frozenset(
 _KEY_PAIRS = ((".docker", "config.json"), (".config", "gh"), (".config", "gcloud"), ("etc", "shadow"), ("etc", "sudoers"), ("etc", "master.passwd"))
 _KEY_STEMS = frozenset("credentials password passwords secret secrets".split())
 _EXAMPLE_ENDINGS = (".example", ".sample", ".template", ".dist")
-_OBEYED_FOLDERS = frozenset(".git .github .husky .vscode .claude .cursor .devcontainer launchagents launchdaemons".split())
-_OBEYED_FILES = frozenset(".zshrc .zshenv .zprofile .zlogin .bashrc .bash_profile .bash_login .profile .gitconfig".split())
+_OBEYED_FOLDERS = frozenset(
+    ".git .github .husky .vscode .claude .cursor .devcontainer launchagents launchdaemons"
+    # what coding agents load from a project: their settings, the tool servers they start, the rules they follow
+    " .gemini .codex .windsurf .amazonq .continue .clinerules".split()
+)
+_OBEYED_FILES = frozenset(
+    ".zshrc .zshenv .zprofile .zlogin .bashrc .bash_profile .bash_login .profile .gitconfig"
+    " .mcp.json agents.md claude.md claude.local.md gemini.md .cursorrules .windsurfrules".split()  # .clinerules is a folder above, or a file of that name
+)
+# Another program's settings and the words it was started with, which is where secrets passed to it are found.
+_PROC_SECRETS = ("environ", "cmdline")
 # ..namedfork is how macOS reaches a file's contents through a path that goes on past the file's name.
 _NOT_PLAIN = re.compile(r"[$\\`]|^~[^/]|^[A-Za-z]:|^\s|\s$|(?i:\.\.namedfork)")
 
@@ -1652,12 +1676,34 @@ def _key_name(name: str) -> bool:
 def _key_place(path: str) -> bool:
     """True if any name on the way is one that keys are kept under: a folder called secrets counts, and so does what is in it."""
     pieces = _pieces(path)
+    if pieces[:1] == ["proc"] and pieces[-1] in _PROC_SECRETS:
+        return True
     return any(_key_name(piece) for piece in pieces) or any(pair in _KEY_PAIRS for pair in zip(pieces, pieces[1:]))
 
 
 def _obeyed_place(path: str) -> bool:
     pieces = _pieces(path)
     return any(piece in _OBEYED_FOLDERS for piece in pieces) or (bool(pieces) and pieces[-1] in _OBEYED_FILES)
+
+
+# Top folders that the system itself makes as links: on macOS /tmp, /var and /etc lead into /private.
+_SYSTEM_ALIASES = ("/tmp", "/var", "/etc")
+
+
+def _system_alias(real: str, tidy: str) -> bool:
+    """True when the only link on the way is one of the system's own top folders, which is no news to the owner."""
+    top = next((alias for alias in _SYSTEM_ALIASES if _same(tidy) == alias or _same(tidy).startswith(alias + "/")), None)
+    return top is not None and real == _real(top) + tidy[len(top):]
+
+
+def _shown_place(path: str, home: str) -> str:
+    """A place for a reason: ~ for the home folder, a letter that cannot be shown as ?, cut at MAX_PLACE with a mark of what was cut."""
+    shown = "~" + path[len(home):] if _under(path, [home], exact=True) else path
+    shown = "".join(letter if letter.isprintable() else "?" for letter in shown)
+    if len(shown) <= MAX_PLACE:
+        return shown
+    mark = "... #" + hashlib.sha256(path.encode("utf-8", "surrogatepass")).hexdigest()[:8]
+    return shown[: MAX_PLACE - len(mark)] + mark
 
 
 def _whole_path(text: str, home: str) -> Optional[str]:
@@ -1749,6 +1795,9 @@ class _Files(Rule):
             found.append((NEEDS_YES, _F_RUNS_ITSELF))
         if self._does == "delete" and (text.endswith("/") or os.path.isdir(real)):
             found.append((NEEDS_YES, _F_FOLDER))
+        if real != tidy and found and not _system_alias(real, tidy):
+            # Said first, so the card shows it: the owner is asked about where the write lands, not the name it was given.
+            found.insert(0, (NEEDS_YES, _F_LEADS.format(_shown_place(real, self._home))))
         return found
 
 
