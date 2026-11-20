@@ -67,6 +67,19 @@ GAVE_UP = "The app stopped waiting for this call. Nothing was run."
 SERVER_GONE = "The MCP server is not running. Nothing was run."
 FAILED = "The MCP server answered this call with an error."
 TOKEN_NAME = "KETTLE_TELEGRAM_TOKEN"
+KEYCHAIN_SERVICE = "kettle-telegram"  # on a Mac, the bot token can be kept in the Keychain under this name
+
+
+def bot_token(environ: Optional[dict] = None, run: Callable[..., Any] = subprocess.run, platform: str = sys.platform) -> str:
+    """The bot token: from KETTLE_TELEGRAM_TOKEN, or on a Mac from the Keychain. Never from a file of ours."""
+    token = (os.environ if environ is None else environ).get(TOKEN_NAME, "").strip()
+    if token or platform != "darwin":
+        return token
+    try:
+        found = run(["security", "find-generic-password", "-a", "kettle", "-s", KEYCHAIN_SERVICE, "-w"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return found.stdout.strip() if found.returncode == 0 else ""
 
 
 class ConfigError(Exception):
@@ -343,9 +356,9 @@ def serve(
     if approver is None and type(settings) is dict and "chat_id" in settings:
         from .telegram import TelegramApprover
 
-        token = os.environ.get(TOKEN_NAME, "").strip()
+        token = bot_token()
         if not token:
-            raise ConfigError(f"[approver] is set, but {TOKEN_NAME} is not")
+            raise ConfigError(f"[approver] is set, but {TOKEN_NAME} is not, and no token is in the Keychain as {KEYCHAIN_SERVICE}")
         approver = TelegramApprover(checkpoint, token=token, chat_id=settings["chat_id"], approver="owner, on Telegram, through kettle.mcp")
     server = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
     proxy = Proxy(checkpoint, config.get("tools", {"default": "ask"}), server.stdin, server.stdout, app_out, approver, options["hold_seconds"])

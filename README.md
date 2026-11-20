@@ -663,6 +663,28 @@ watch = ["to"]
 - **It trusts the names the server gives its tools.** A server that offers a dangerous tool under a name you
   set to "free" gets it run free. Keep the default at "ask" and name only tools you know.
 - With no `[approver]`, a call that needs a yes is refused with a note that no phone is set up.
+- The bot token is read from `KETTLE_TELEGRAM_TOKEN`, or on a Mac from the Keychain (service
+  `kettle-telegram`, account `kettle`), so it need not be written in the app's settings.
+
+#### Setting it up in one run
+
+*Newer than release 0.2.1. The tests use settings files in a temporary folder and never an app's real
+ones. Not tried on a real Claude Desktop or Cursor yet.*
+
+```
+python -m kettle.setup
+```
+
+It finds the MCP settings of Claude Desktop and Cursor, lists the servers in them, and puts Kettle in front of
+the ones you pick. Each gets a rules file of its own in `~/.kettle`, readable only by you, with every tool set to "ask"
+and the tools the server offers written in it as comments, to set one by one. A copy of the settings file is
+kept before any change, and `python -m kettle.setup --undo` puts each server back as it was.
+
+- It never asks for or writes the bot token. On a Mac it tells you the one `security` command that keeps the
+  token in the Keychain, and the Keychain asks you for it.
+- A server's `env` (which can hold its own keys) stays in the app's settings and is never copied out.
+- Reading a server's tools starts it once, if you say yes; it runs none of them, and a server that does not
+  answer within 15 seconds is stopped.
 
 ## The attack test
 
@@ -846,7 +868,7 @@ change). The built package has a row of its own. Where a row was measured on old
 
 | Check | Command | Result |
 | --- | --- | --- |
-| The tests | `.venv/bin/pytest` | 5466 passed on Python 3.14.8 on 2026-11-19, with both extras installed (`claude` and `openai`). Not measured again on other versions or with no extras. For release 0.2.1, on 2026-11-18: 5228. On 2026-11-17, before the ready-made rules were added: 1119. For 0.2.0, on 2026-11-17: 1059 passed on 3.14.8. For 0.1.0, on 2026-11-15: 604 passed on 3.14.8 and 3.15.2; on 3.11.18, 603 passed and 1 was skipped (it needs 3.14); with neither extra, on 3.15.2, 598 passed and 6 were skipped. |
+| The tests | `.venv/bin/pytest` | 5484 passed on Python 3.14.8 on 2026-11-19, with both extras installed (`claude` and `openai`). Not measured again on other versions or with no extras. For release 0.2.1, on 2026-11-18: 5228. On 2026-11-17, before the ready-made rules were added: 1119. For 0.2.0, on 2026-11-17: 1059 passed on 3.14.8. For 0.1.0, on 2026-11-15: 604 passed on 3.14.8 and 3.15.2; on 3.11.18, 603 passed and 1 was skipped (it needs 3.14); with neither extra, on 3.15.2, 598 passed and 6 were skipped. |
 | The attack test's check of itself | `.venv/bin/python -m kettle.attacktest --self-check` | 8 of 8 checks held, on each of the two case sets (add `--cases fraud` for the second) |
 | Checkpoint and source trail broken on purpose | `.venv/bin/python checks/break_checkpoint.py` | 282 breaks tried, 282 caught by the tests |
 | Attack test broken on purpose | `.venv/bin/python checks/break_attacktest.py` | 107 breaks tried, 106 caught, 1 known and explained |
@@ -857,6 +879,7 @@ change). The built package has a row of its own. Where a row was measured on old
 | Browser demo broken on purpose | `.venv/bin/python checks/break_demo.py` | 43 breaks tried, 43 caught by the tests |
 | Receipts broken on purpose | `.venv/bin/python checks/break_verify.py` | 51 breaks tried, 51 caught by the tests |
 | `kettle.mcp` broken on purpose | `.venv/bin/python checks/break_mcp.py` | 25 breaks tried, 25 caught by the tests |
+| `kettle.setup` broken on purpose | `.venv/bin/python checks/break_setup.py` | 19 breaks tried, 19 caught by the tests |
 | Source trail over the saved runs | `.venv/bin/python checks/trail_over_saved_runs.py` | 170 of 170 runs saved on 15 November played again. Of the held actions, 31 of 31 aimed at the attacker and 55 of 55 others traced to an earlier call, and none had no source found |
 | Previews read back | `.venv/bin/python checks/read_back.py` | 150,000 random records, each written at 78 and again at one narrower width (32 to 77, picked at random): 0 read back wrongly, no line longer than its width, no two different records sharing a preview |
 | The built package | see [RELEASING.md](https://github.com/engineerjames44/kettle-core/blob/main/RELEASING.md) | For 0.2.1, on 2026-11-19: the wheel and the source archive build from a clean copy of the committed files, and the wheel installed by itself into an empty environment on Python 3.11.18, 3.14.8 and 3.15.2 passes the self-check on both case sets and gives the same 25 tried, 23 stopped on the attacks on the yes. After the upload the same day, the files on PyPI were byte for byte the ones built, and `pip install kettle-labs==0.2.1` from PyPI into an empty environment on the same three Python versions passed the same checks with the same counts. For 0.2.0, on 2026-11-17: the wheel and the source archive build from a clean copy of the committed files, and the wheel installed by itself into an empty environment on Python 3.11.18, 3.14.8 and 3.15.2 passes the self-check on both case sets and gives the same 25 tried, 23 stopped on the attacks on the yes. After the upload the same evening, `pip install kettle-labs==0.2.0` from PyPI into an empty environment on the same three Python versions passed the same checks with the same counts. For 0.1.0, on 2026-11-16, `pip install kettle-labs` from PyPI into an empty environment on Python 3.14.8 passed the two self-checks |
@@ -865,7 +888,7 @@ change). The built package has a row of its own. Where a row was measured on old
   those rules, the hold in `src/kettle/holds.py`, asking again when a rule's reasons change, the published
   coding-agent tricks, the commands that check the attack test's own numbers, and more cases for the source
   trail and the attack test. All are new since 0.2.0 and most are not described in this README yet.
-  Of the rest, 36 are for `kettle.mcp`, 435 for the checkpoint, 301 for the attack test, 64 for the adapters, 237 for the
+  Of the rest, 36 are for `kettle.mcp`, 18 for `kettle.setup`, 435 for the checkpoint, 301 for the attack test, 64 for the adapters, 237 for the
   Telegram approver, 39 for the attacks on the yes, 25 for the browser demo and 31 for the receipts. 8 run
   the examples and 7 check that the tests stay on this machine. Of the checkpoint's, the 102 in
   `tests/test_fixed_ways_around.py` are the ones that try a way around it (a changed action, a reused or
