@@ -117,10 +117,26 @@ class Rule:
         asked cancels the yes. For a ready-made rule they are the reasons explain()
         gives.
         """
-        return self.explain(inputs).reasons
+        return self._both(inputs)[1]
+
+    def seen(self, inputs: dict) -> tuple:
+        """why() and reasons_in() from one look at the inputs, as (text, reasons).
+
+        The checkpoint uses this when a tool's describe is the rule's own why(), so
+        the card the owner reads and the reasons it keeps come from the same look:
+        a link that changes between two looks cannot make them differ.
+        """
+        verdict, reasons = self._both(inputs)
+        return self._said(verdict), reasons
+
+    def _both(self, inputs: dict) -> tuple:
+        verdict = self.explain(inputs)
+        return verdict, verdict.reasons
 
     def why(self, inputs: dict) -> str:
-        verdict = self.explain(inputs)
+        return self._said(self.explain(inputs))
+
+    def _said(self, verdict: Verdict) -> str:
         if verdict.level == FREE:
             return "Runs without asking: " + self._fine
         reasons = list(verdict.reasons[:MAX_REASONS])

@@ -134,7 +134,9 @@ class _Over(Rule):
         object.__setattr__(self, "_fine", getattr(inner, "_fine", Rule._fine))
 
     def explain(self, inputs: dict) -> Verdict:
-        under = self._under(inputs)
+        return self._with_hold(self._under(inputs))
+
+    def _with_hold(self, under: Verdict) -> Verdict:
         held = self._hold.reasons()
         if not held or under.level not in (FREE, NEEDS_YES):
             return under
@@ -146,10 +148,16 @@ class _Over(Rule):
     def reasons_in(self, inputs: dict) -> tuple:
         """The level's own reasons. The Hold's are left out: they come from what was read, not from this action,
         so text read while the owner decides does not cancel a yes for an action that has not changed."""
+        return self._both(inputs)[1]
+
+    def _both(self, inputs: dict) -> tuple:
+        """The verdict with the Hold's reasons in it, and the reasons of the level beneath, from one look."""
         inner = self._inner
         if isinstance(inner, Rule):
-            return inner.reasons_in(inputs)
-        return ()
+            under, reasons = inner._both(inputs)
+        else:
+            under, reasons = self._under(inputs), ()
+        return self._with_hold(under), reasons
 
     def _under(self, inputs: dict) -> Verdict:
         inner = self._inner

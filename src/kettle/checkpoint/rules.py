@@ -14,6 +14,7 @@ import functools
 import hashlib
 import inspect
 import json
+import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Union
 
@@ -107,8 +108,17 @@ def _kept_reason(reason: str) -> str:
 
 
 class Rules:
+    """The list of tools. It may be changed from one thread while another asks.
+
+    A change swaps in a whole new entry for the tool, under a lock. Each step of a
+    request (asking, the yes, the run) finds the tool once and keeps that entry to
+    the end of the step, so a step sees the old rule or the new one, never half of
+    each. The next step finds the tool again and gets whatever is listed then.
+    """
+
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
+        self._lock = threading.Lock()
 
     def add(
         self,
@@ -122,8 +132,6 @@ class Rules:
     ) -> Tool:
         if type(name) is not str or not name:
             raise RulesError("a tool name must be non-empty text")
-        if name in self._tools and not replace:
-            raise RulesError(f"{name} is already listed")
         if not callable(level) and level not in LEVELS:
             raise RulesError(f"{name}: the level must be FREE, NEEDS_YES, NEVER or a function")
         if run is None and level != NEVER:
@@ -135,17 +143,27 @@ class Rules:
         signature, fixed = (None, frozenset()) if run is None else _read_signature(name, run)
         watch = _read_watch(name, watch, signature, fixed)
         tool = Tool(name=name, run=run, level=level, describe=describe, signature=signature, fixed=fixed, watch=watch)
-        self._tools[name] = tool
+        with self._lock:  # the check and the change in one step, so two threads cannot both list a new name
+            if name in self._tools and not replace:
+                raise RulesError(f"{name} is already listed")
+            self._tools[name] = tool
         return tool
 
     def remove(self, name: str) -> None:
-        self._tools.pop(name, None)
+        with self._lock:
+            self._tools.pop(name, None)
 
     def names(self) -> list[str]:
-        return sorted(self._tools)
+        return sorted(self._listed())
+
+    def _listed(self) -> dict:
+        """A copy of the list as it is now, taken in one step."""
+        with self._lock:
+            return dict(self._tools)
 
     def find(self, name: Any) -> Tool:
-        tool = self._tools.get(name) if type(name) is str else None
+        with self._lock:
+            tool = self._tools.get(name) if type(name) is str else None
         if tool is None:
             raise Refused("that tool is not listed in the rules")
         return tool
@@ -183,6 +201,23 @@ class Rules:
             raise Refused(f"the rule for {tool.name} did not give its reasons as text")
         return sorted({_kept_reason(reason) for reason in reasons})
 
+    def one_look(self, tool: Tool, inputs: dict) -> Optional[tuple]:
+        """(card text, reasons) from one look at the rule, when the tool's describe is its level's own why(). Else None.
+
+        Raises Refused if the rule fails or does not answer in the right shape.
+        """
+        level, describe = tool.level, tool.describe
+        seen = getattr(level, "seen", None)
+        if not callable(seen) or getattr(describe, "__self__", None) is not level or getattr(describe, "__name__", None) != "why":
+            return None
+        try:
+            text, reasons = seen(inputs)
+        except Exception as error:
+            raise Refused(f"the rule for {tool.name} failed ({type(error).__name__})") from None
+        if type(text) is not str or type(reasons) not in (tuple, list) or any(type(reason) is not str for reason in reasons):
+            raise Refused(f"the rule for {tool.name} did not give its reasons as text")
+        return text, sorted({_kept_reason(reason) for reason in reasons})
+
     def check_fits(self, tool: Tool, inputs: dict) -> None:
         """Refuse inputs the tool's function could not be called with."""
         if tool.run is None or tool.signature is None:
@@ -203,11 +238,12 @@ class Rules:
         inputs are written only for a tool that has some.
         """
         listed = []
-        for name in self.names():
-            level = self._tools[name].level
+        tools = self._listed()  # one copy, so a tool changed meanwhile cannot break this
+        for name in sorted(tools):
+            level = tools[name].level
             if callable(level):
                 level = "rule:" + getattr(level, "__qualname__", type(level).__name__)
-            watch = self._tools[name].watch
+            watch = tools[name].watch
             listed.append([name, level, list(watch)] if watch else [name, level])
         text = json.dumps(listed, separators=(",", ":"), ensure_ascii=True)
         return hashlib.sha256(text.encode("ascii")).hexdigest()[:16]

@@ -11,7 +11,7 @@ yes is cancelled for nothing, or an older request refused for no reason.
 
 from _runner import rep, run
 
-TESTS = ["test_ask_again.py", "test_stored_inputs.py", "test_agent_files_rules.py", "test_agent_tricks.py", "test_files_rule.py"]
+TESTS = ["test_ask_again.py", "test_tool_swap.py", "test_stored_inputs.py", "test_agent_files_rules.py", "test_agent_tricks.py", "test_files_rule.py"]
 
 CP = "checkpoint/checkpoint.py"
 CR = "checkpoint/rules.py"
@@ -19,7 +19,7 @@ ST = "checkpoint/store.py"
 H = "holds.py"
 R = "rules.py"
 
-KEEP = '            reasons = self._rules.reasons_for(found, record.inputs()) if level != FREE else []\n'
+KEEP = '            summary, reasons = self._asked_about(found, record) if level != FREE else (None, [])\n'
 DETAIL = '"rules": self._rules.digest(), "reasons": reasons}'
 AT_YES = "                    self._same_reasons(tx, request_id, self._recheck(record), record)\n"
 AT_RUN = "                    found = self._recheck(record)\n                    self._same_reasons(tx, request_id, found, record)\n"
@@ -39,9 +39,9 @@ CUT = "    return reason[: MAX_REASON - len(mark)] + mark\n"
 
 HELD_SQL = "\"SELECT detail FROM log WHERE request_id = ? AND event = 'held' ORDER BY seq LIMIT 1\", (request_id,)\n        ).fetchone()"
 
-HOLD_IN = "        if isinstance(inner, Rule):\n            return inner.reasons_in(inputs)\n        return ()\n"
+HOLD_IN = "        return self._both(inputs)[1]\n\n    def _both(self, inputs: dict) -> tuple:\n        \"\"\"The verdict with the Hold's"
 
-RULE_IN = "        return self.explain(inputs).reasons\n\n    def why"
+RULE_IN = "        verdict = self.explain(inputs)\n        return verdict, verdict.reasons\n"
 PROC_FILES = '    if pieces[:1] == ["proc"] and pieces[-1] in _PROC_SECRETS:\n        return True\n'
 PROC_SHELL = '    if "proc" in on_the_way and on_the_way[-1] in _PROC_SECRETS:\n        return True\n'
 LEADS = "        if real != tidy and found and not _system_alias(real, tidy):\n            # Said first, so the card shows it: the owner is asked about where the write lands, not the name it was given.\n            found.insert(0, (NEEDS_YES, _F_LEADS.format(_shown_place(real, self._home))))\n"
@@ -57,14 +57,26 @@ INPUTS_CHECKED = "            record = self._stored_record(rows[0])\n        exc
 GATE_NAMES = "    def tool_names(self) -> list[str]:\n        return self._names()\n\n\ndef _mark"
 
 
+ONE_LOOK_CHECK = '        if not callable(seen) or getattr(describe, "__self__", None) is not level or getattr(describe, "__name__", None) != "why":\n'
+ASKED = "        once = self._rules.one_look(found, inputs)\n"
+AFTER = "        if self._rules.reasons_for(found, inputs) != reasons:\n"
+SEEN = "        verdict, reasons = self._both(inputs)\n        return self._said(verdict), reasons\n"
+OVER_BOTH = "            under, reasons = inner._both(inputs)\n"
+CUT_SUMMARY = '    return text if len(text) <= 500 else text[:500] + " [summary cut at 500 characters]"\n\n\ndef _clip'
+
+
+ADD_LOCKED = "        with self._lock:  # the check and the change in one step, so two threads cannot both list a new name\n            if name in self._tools and not replace:\n                raise RulesError(f\"{name} is already listed\")\n            self._tools[name] = tool\n"
+DIGEST_COPY = "        tools = self._listed()  # one copy, so a tool changed meanwhile cannot break this\n        for name in sorted(tools):\n"
+
+
 def gone(old):
     return rep(old, "")
 
 
 MUTANTS = [
     # ---- the checkpoint keeps the reasons and compares them
-    ("keep: no reasons are worked out at the hold", CP, rep(KEEP, "            reasons = []\n")),
-    ("keep: reasons are worked out for a free action too", CP, rep(KEEP, KEEP.replace(" if level != FREE else []", ""))),
+    ("keep: no reasons are kept at the hold", CP, rep("        return summary, reasons\n\n    def _summary", "        return summary, []\n\n    def _summary")),
+    ("keep: reasons are worked out for a free action too", CP, rep(KEEP, KEEP.replace(" if level != FREE else (None, [])", ""))),
     ("keep: the reasons are not put in the log", CP, rep(DETAIL, '"rules": self._rules.digest()}')),
     ("keep: the reasons are put in the log unsorted", CP, rep(DETAIL, '"rules": self._rules.digest(), "reasons": reasons[::-1]}')),
     ("compare: not at the yes", CP, rep(AT_YES, "                    self._recheck(record)\n")),
@@ -89,6 +101,25 @@ MUTANTS = [
     ("inputs: a request id that is not text is looked up anyway", CP, rep('"SELECT * FROM requests WHERE id = ?", (request_id,)) if type(request_id) is str else []\n        if not rows:\n            return None\n        try:', '"SELECT * FROM requests WHERE id = ?", (str(request_id),))\n        if not rows:\n            return None\n        try:')),
     ("inputs: only the first input is given", CP, rep(INPUTS_RETURN, "        return dict(list(copy.deepcopy(record.inputs()).items())[:1])\n\n    def needs_checking")),
     ("inputs: no deep copy", CP, rep(INPUTS_RETURN, "        return record.inputs()\n\n    def needs_checking")),
+    # ---- one look for the card and the kept reasons, and a check after
+    ("one look: never used", CP, rep(ASKED, "        once = None\n")),
+    ("one look: any describe of the level's counts", CR, rep(ONE_LOOK_CHECK, '        if not callable(seen) or getattr(describe, "__self__", None) is not level:\n')),
+    ("one look: another rule's why counts", CR, rep(ONE_LOOK_CHECK, '        if not callable(seen) or getattr(describe, "__name__", None) != "why":\n')),
+    ("one look: the text is not checked", CR, rep("        if type(text) is not str or type(reasons) not in (tuple, list)", "        if type(reasons) not in (tuple, list)")),
+    ("one look: a rule that fails is let through", CR, rep('            text, reasons = seen(inputs)\n        except Exception as error:\n            raise Refused(f"the rule for {tool.name} failed ({type(error).__name__})") from None\n', '            text, reasons = seen(inputs)\n        except Exception as error:\n            return None\n')),
+    ("check after: gone", CP, rep(AFTER, "        if False:\n")),
+    ("check after: only a new reason counts", CP, rep(AFTER, "        if not set(self._rules.reasons_for(found, inputs)) <= set(reasons):\n")),
+    ("seen: text and reasons from two looks", R, rep(SEEN, "        return self.why(inputs), self.reasons_in(inputs)\n")),
+    ("hold: the rule beneath is looked at twice", H, rep(OVER_BOTH, "            under, reasons = inner.explain(inputs), inner.reasons_in(inputs)\n")),
+    ("card: a long card is not cut", CP, rep(CUT_SUMMARY, "    return text\n\n\ndef _clip")),
+    # ---- the tool list changed from another thread
+    ("tools: the check and the change are two steps", CR, rep(ADD_LOCKED, "        if name in self._tools and not replace:\n            raise RulesError(f\"{name} is already listed\")\n        with self._lock:\n            self._tools[name] = tool\n")),
+    ("tools: no lock when a tool is listed", CR, rep(ADD_LOCKED, "        if name in self._tools and not replace:\n            raise RulesError(f\"{name} is already listed\")\n        self._tools[name] = tool\n")),
+    ("tools: a tool can be listed twice", CR, rep(ADD_LOCKED, "        with self._lock:\n            self._tools[name] = tool\n")),
+    ("tools: the fingerprint reads the live list", CR, rep(DIGEST_COPY, "        tools = self._tools\n        for name in self.names():\n")),
+    ("tools: no lock when a tool is found", CR, rep("        with self._lock:\n            tool = self._tools.get(name) if type(name) is str else None", "        if True:\n            tool = self._tools.get(name) if type(name) is str else None")),
+    ("tools: no lock when a tool is removed", CR, rep("        with self._lock:\n            self._tools.pop(name, None)", "        if True:\n            self._tools.pop(name, None)")),
+    ("tools: no lock when the list is copied", CR, rep("        with self._lock:\n            return dict(self._tools)", "        if True:\n            return dict(self._tools)")),
     # ---- the reasons themselves
     ("reasons: never asked for", CR, rep(FOR_LOOK, '        reasons_in = None\n')),
     ("reasons: explain() is used, so a Hold's own reasons count", CR, rep(FOR_LOOK, '        reasons_in = (lambda inputs: tool.level.explain(inputs).reasons) if hasattr(tool.level, "explain") else None\n')),
@@ -105,10 +136,10 @@ MUTANTS = [
     ("store: the last held entry is read", ST, rep(HELD_SQL, HELD_SQL.replace("ORDER BY seq LIMIT 1", "ORDER BY seq DESC LIMIT 1"))),
     ("store: an entry that is not JSON stops the checkpoint", ST, rep("        except (ValueError, TypeError):\n            return None\n\n    def seen", "        except TypeError:\n            return None\n\n    def seen")),
     # ---- a Hold gives only what is beneath it
-    ("hold: its own reasons are given too", H, rep(HOLD_IN, "        return self.explain(inputs).reasons\n")),
-    ("hold: the rule beneath gives nothing", H, rep(HOLD_IN, "        return ()\n")),
-    ("hold: a plain level beneath gives a reason", H, rep(HOLD_IN, "        if isinstance(inner, Rule):\n            return inner.reasons_in(inputs)\n        return ('the level',)\n")),
-    ("rule: a ready-made rule gives no reasons to keep", R, rep(RULE_IN, "        return ()\n\n    def why")),
+    ("hold: its own reasons are given too", H, rep(HOLD_IN, HOLD_IN.replace("return self._both(inputs)[1]", "return self.explain(inputs).reasons"))),
+    ("hold: the rule beneath gives nothing", H, rep(OVER_BOTH, "            under, reasons = inner._both(inputs)[0], ()\n")),
+    ("hold: a plain level beneath gives a reason", H, rep("            under, reasons = self._under(inputs), ()\n", "            under, reasons = self._under(inputs), ('the level',)\n")),
+    ("rule: a ready-made rule gives no reasons to keep", R, rep(RULE_IN, "        verdict = self.explain(inputs)\n        return verdict, ()\n")),
     # ---- agent files and /proc
     ("agent files: .mcp.json is not one", R, rep(" .mcp.json agents.md", " agents.md")),
     ("agent files: AGENTS.md is not one", R, rep(" .mcp.json agents.md claude.md", " .mcp.json claude.md")),
@@ -152,6 +183,9 @@ MUTANTS = [
 ]
 
 KNOWN = {
+    "tools: no lock when a tool is found": "with Python's global lock one dict read is one step anyway; the lock is there for builds without it",
+    "tools: no lock when a tool is removed": "with Python's global lock one dict change is one step anyway; the lock is there for builds without it",
+    "tools: no lock when the list is copied": "with Python's global lock copying a dict is one step anyway; the lock is there for builds without it",
     "inputs: no deep copy": "a record reads its inputs afresh from its stored text each time, so each call is a new copy anyway",
     "store: the last held entry is read": "a request is held once, so its first and its last held entry are the same entry",
     "alias: a name that only starts like one counts": "a name such as /tmpfoo then fails the check that the place is the alias's own place plus the rest",

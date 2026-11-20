@@ -7,6 +7,7 @@ the owner was asked cancels the request, and nothing runs.
 
 import json
 import os
+import re
 import sqlite3
 
 import pytest
@@ -186,7 +187,7 @@ def test_a_rule_that_now_fails_cancels(place):
 
         def _look(self, inputs):
             calls.append(1)
-            if len(calls) > 2:
+            if len(calls) > 3:  # asking looks three times: the level, the card with its reasons, the check after
                 raise RuntimeError("broken")
             return [(NEEDS_YES, "first reason")]
 
@@ -370,3 +371,177 @@ def test_a_rule_that_fails_when_asked_for_reasons_refuses_the_request(place):
     world = World(place, level=Breaks())
     done = world.ask()
     assert done.status == "refused" and "failed (RuntimeError)" in done.reason and world.log("held") == []
+
+
+# ---- the card and the kept reasons come from one look ------------------------------------
+
+
+class Flips(rules.Rule):
+    """A rule that gives the next scripted reason on each look, as a link flipped back and forth would."""
+
+    kind = "flips"
+
+    def __init__(self, answers):
+        super().__init__({})
+        object.__setattr__(self, "_answers", list(answers))
+
+    def _look(self, inputs):
+        answer = self._answers.pop(0) if len(self._answers) > 1 else self._answers[0]
+        return [(NEEDS_YES, answer)]
+
+
+SAFE, DANGER = "it is an ordinary file", "it really leads to ~/.zshrc"
+
+
+def card(preview):
+    """The preview as one line: wrapped lines joined again, a space kept at a line's end written as a space."""
+    return re.sub(r"\n\s*\+ ", "", preview.replace("\\u{0020}", " "))
+
+
+@pytest.mark.parametrize("answers", [[DANGER, DANGER, SAFE], [DANGER, SAFE, DANGER], [SAFE, DANGER, SAFE], [SAFE, SAFE, DANGER], [SAFE, DANGER, SAFE, DANGER]])
+def test_a_rule_that_changes_while_the_request_is_made_is_refused(place, answers):
+    # The looks are: the level, the card with its reasons, the check after.
+    world = World(place, level=Flips(answers))
+    done = world.ask()
+    assert done.status == "refused" and world.log("held") == [] and world.ran == []
+    assert done.reason == "Refused: what the rule sees changed while the owner was being asked. Ask again. Nothing was run."
+
+
+def test_the_card_and_the_kept_reasons_come_from_the_same_look(place):
+    world = World(place, level=Flips([SAFE, DANGER, DANGER, DANGER]))
+    held = world.ask()
+    assert held.status == "held"
+    assert "Asks because: " + DANGER in card(held.preview)
+    assert world.log("held")[0]["detail"]["reasons"] == [DANGER]
+
+
+def test_a_card_that_was_steady_while_asked_is_still_cancelled_if_it_flips_before_the_yes(place):
+    world = World(place, level=Flips([DANGER, SAFE, SAFE, DANGER]))
+    held = world.ask()
+    assert held.status == "held" and "Asks because: " + SAFE in card(held.preview)
+    said = world.checkpoint.approve(held.request_id, held.fingerprint)
+    assert said.status == "refused" and said.reason == "Refused and cancelled: " + CHANGED + DANGER + "). Ask again."
+
+
+def test_the_owners_yes_after_a_steady_card_runs(place):
+    world = World(place, level=Flips([DANGER]))
+    held = world.ask()
+    world.checkpoint.approve(held.request_id, held.fingerprint)
+    assert world.checkpoint.run(held.request_id).status == "ran"
+
+
+def test_a_card_written_by_the_app_is_still_checked_after_it_is_written(place):
+    looks = []
+
+    class Counted(rules.Rule):
+        kind = "counted"
+
+        def _look(self, inputs):
+            looks.append(1)
+            return [(NEEDS_YES, SAFE if len(looks) < 3 else DANGER)]
+
+    rule = Counted({})
+    world = World(place, level=rule)
+    world.checkpoint.tool("write_file", world.write, level=rule, describe=lambda inputs: "the app's own words", replace=True)
+    done = world.ask()  # looks: the level, the kept reasons, the check after the card: the third differs
+    assert done.status == "refused" and "changed while the owner was being asked" in done.reason
+
+
+def test_only_the_rules_own_why_counts_as_one_look(place):
+    other = Flips(["what another rule says"])
+    world = World(place, level=Flips([DANGER]))
+    world.checkpoint.tool("write_file", world.write, level=world.rule, describe=other.why, replace=True)
+    held = world.ask()
+    assert "what another rule says" in card(held.preview)
+    assert world.log("held")[0]["detail"]["reasons"] == [DANGER]
+
+
+def test_under_a_hold_the_card_has_the_holds_reason_and_the_kept_reasons_do_not(place):
+    hold = Hold()
+    files = rules.files([str(place / "project" / "src")], does="write")
+    world = World(place, level=hold.over(files))
+    hold.on("a web page was read")
+    held = world.ask()
+    shown = card(held.preview)
+    assert "Asks because: " + OUTSIDE + "; the app said to ask: a web page was read" in shown
+    assert world.log("held")[0]["detail"]["reasons"] == [OUTSIDE]
+
+
+def test_seen_gives_what_why_and_reasons_in_give(place):
+    hold = Hold()
+    files = rules.files([str(place / "project" / "src")], does="write")
+    outside = {"path": str(place / "project" / "README.md"), "content": "x"}
+    for level in (files, hold.over(files), hold.over(FREE), hold.over(NEEDS_YES)):
+        for on in (False, True):
+            hold.off()
+            if on:
+                hold.on("a web page was read")
+            assert level.seen(outside) == (level.why(outside), level.reasons_in(outside))
+
+
+@pytest.mark.parametrize("answer", [(7, ("a",)), ("text", "a"), ("text", ("a", 7)), ("text", None)])
+def test_a_rule_whose_one_look_is_not_text_is_refused(place, answer):
+    class Odd(rules.Rule):
+        kind = "odd"
+
+        def _look(self, inputs):
+            return [(NEEDS_YES, "a")]
+
+        def seen(self, inputs):
+            return answer
+
+    world = World(place, level=Odd({}))
+    done = world.ask()
+    assert done.status == "refused" and "did not give its reasons as text" in done.reason
+
+
+def test_a_rule_whose_one_look_fails_is_refused(place):
+    class Breaks(rules.Rule):
+        kind = "breaks"
+
+        def _look(self, inputs):
+            return [(NEEDS_YES, "a")]
+
+        def seen(self, inputs):
+            raise RuntimeError("no")
+
+    world = World(place, level=Breaks({}))
+    done = world.ask()
+    assert done.status == "refused" and "failed (RuntimeError)" in done.reason
+
+
+def test_seen_takes_its_text_and_its_reasons_from_one_look(place):
+    outside = {"path": "x", "content": "x"}
+    assert Flips([SAFE, DANGER]).seen(outside) == ("Asks because: " + SAFE, (SAFE,))
+    hold = Hold()
+    hold.on("a web page was read")
+    assert hold.over(Flips([SAFE, DANGER])).seen(outside) == ("Asks because: " + SAFE + "; the app said to ask: a web page was read", (SAFE,))
+
+
+def test_another_method_of_the_same_rule_is_not_taken_for_its_why(place):
+    world = World(place, level=Flips([DANGER]))
+    world.checkpoint.tool("write_file", world.write, level=world.rule, describe=world.rule.settings, replace=True)
+    held = world.ask()
+    assert held.status == "held" and "Asks because" not in card(held.preview) and "Summary" not in held.preview
+
+
+def test_a_long_card_is_cut_at_500_characters(place):
+    world = World(place, level=Flips(["x" * 600]))
+    held = world.ask()
+    assert "[summary cut at 500 characters]" in card(held.preview)
+    assert world.log("held")[0]["detail"]["reasons"][0].endswith("]") and " [cut, #" in world.log("held")[0]["detail"]["reasons"][0]
+
+
+def test_a_reason_that_goes_away_while_the_request_is_made_is_refused_too(place):
+    looks = []
+
+    class Fading(rules.Rule):
+        kind = "fading"
+
+        def _look(self, inputs):
+            looks.append(1)
+            return [(NEEDS_YES, SAFE)] + ([(NEEDS_YES, DANGER)] if len(looks) == 2 else [])
+
+    world = World(place, level=Fading({}))
+    done = world.ask()  # looks: the level, the card with both reasons, the check after with one: they differ
+    assert done.status == "refused" and "changed while the owner was being asked" in done.reason

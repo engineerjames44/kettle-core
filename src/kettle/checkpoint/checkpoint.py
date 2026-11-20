@@ -135,6 +135,11 @@ class Checkpoint:
 
         watch names inputs, such as ["to"], to mark in the preview when they hold a
         value that no approved action of this tool has run with before.
+
+        It may be called while requests are being made on other threads, for example
+        with replace=True to put in a rule made again with a longer list. A step that
+        is under way keeps the rule it found; the yes and the run that come after ask
+        the new rule, and a reason the owner was not shown cancels them.
         """
         self._rules.add(name, run, level=level, describe=describe, replace=replace, watch=watch)
 
@@ -212,7 +217,7 @@ class Checkpoint:
             self._trail.asked(inputs)  # whatever comes of the call: a value the agent has used is no longer news from a later result
         try:
             found, record, level = self._decide(tool, inputs, actor)
-            reasons = self._rules.reasons_for(found, record.inputs()) if level != FREE else []
+            summary, reasons = self._asked_about(found, record) if level != FREE else (None, [])
         except (Refused, RecordError) as error:
             self._log_quietly("refused", tool=_clip(tool), detail={"reason": _clip(str(error), 500)})
             return Decision(REFUSED, f"Refused: {error}. Nothing was run.", tool=tool_name)
@@ -228,7 +233,6 @@ class Checkpoint:
                     tx.log(now, "started", None, record.tool, record.fingerprint, {"level": FREE, "rules": self._rules.digest()})
             else:
                 request_id = secrets.token_hex(16)
-                summary = self._summary(found, record)
                 with self._store.write() as tx:
                     now = self._clock()
                     expires_at = now + self._hold_seconds
@@ -518,6 +522,25 @@ class Checkpoint:
             raise Refused("the stored request was changed after it was made")
         return record
 
+    def _asked_about(self, found: Tool, record: ActionRecord) -> tuple:
+        """The card's summary and the reasons kept with it.
+
+        When the tool's describe is its rule's own why(), both come from one look at
+        the rule, so the card and the kept reasons cannot differ. Then the rule is
+        asked once more: if its reasons changed while the request was being made
+        (a link changing back and forth, say), the request is refused.
+        """
+        inputs = record.inputs()
+        once = self._rules.one_look(found, inputs)
+        if once is not None:
+            summary, reasons = _cut_summary(once[0]), once[1]
+        else:
+            reasons = self._rules.reasons_for(found, inputs)
+            summary = self._summary(found, record)
+        if self._rules.reasons_for(found, inputs) != reasons:
+            raise Refused("what the rule sees changed while the owner was being asked. Ask again")
+        return summary, reasons
+
     def _summary(self, found: Tool, record: ActionRecord) -> Optional[str]:
         if found.describe is None:
             return None
@@ -525,9 +548,7 @@ class Checkpoint:
             text = found.describe(record.inputs())
         except Exception:
             return None
-        if type(text) is not str or not text:
-            return None
-        return text if len(text) <= 500 else text[:500] + " [summary cut at 500 characters]"
+        return _cut_summary(text)
 
     def _execute(self, found: Tool, record: ActionRecord, request_id: Optional[str]) -> Decision:
         """Run the tool. From here on the answer is never "nothing was run"."""
@@ -650,6 +671,12 @@ def _same(left: Any, right: Any) -> bool:
     if type(left) is not str or type(right) is not str:
         return False
     return hmac.compare_digest(left.encode("utf-8", "replace"), right.encode("utf-8", "replace"))
+
+
+def _cut_summary(text: Any) -> Optional[str]:
+    if type(text) is not str or not text:
+        return None
+    return text if len(text) <= 500 else text[:500] + " [summary cut at 500 characters]"
 
 
 def _clip(value: Any, limit: int = 200) -> str:
