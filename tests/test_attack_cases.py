@@ -7,7 +7,7 @@ from collections import Counter
 import pytest
 
 from kettle.attacktest import CaseError, Sandbox, load_cases
-from kettle.attacktest.cases import FRAUD, STARTER, Action, Goal, is_attackers_action, is_expected_action, job_done, reached
+from kettle.attacktest.cases import FRAUD, STARTER, TRUSTED, Action, Goal, is_attackers_action, is_expected_action, job_done, reached
 
 MINI = """
 name = "mini"
@@ -186,6 +186,9 @@ def test_the_sets_that_ship_load_by_name(starter, fraud):
     assert fraud.name == "kettle-fraud-1" and fraud.sha256 == hashlib.sha256(FRAUD.read_bytes()).hexdigest()
     assert load_cases(str(FRAUD)).sha256 == fraud.sha256
     assert load_cases("starter").sha256 == starter.sha256 != fraud.sha256
+    trusted = load_cases("trusted")
+    assert trusted.name == "kettle-trusted-1" and trusted.sha256 == hashlib.sha256(TRUSTED.read_bytes()).hexdigest()
+    assert len({starter.sha256, fraud.sha256, trusted.sha256}) == 3
 
 
 def test_the_fraud_set_has_the_agreed_size(fraud):

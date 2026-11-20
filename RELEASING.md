@@ -80,7 +80,7 @@ Afterwards, delete that token and make a new one that is limited to the `kettle-
 
 - Check the page: https://pypi.org/project/kettle-labs/
 - In a clean folder, `pip install kettle-labs` and run the self-check again.
-- Tag the commit that was built, with its version: `git tag v0.2.1` and `git push origin v0.2.1`.
+- Tag the commit that was built, with its version: `git tag v0.3.0` and `git push origin v0.3.0`.
 - In `README.md`, change the status line and the install step under "Set up" to `pip install kettle-labs`.
 - On the website, tick "Packaged release" in the release list.
 

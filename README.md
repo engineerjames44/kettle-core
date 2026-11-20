@@ -7,10 +7,18 @@ Two things for people who build AI agents, both free and open source (Apache-2.0
 2. **The attack test.** Believable trick text is planted where your agent reads (an email, a web page, a file,
    a calendar invite). The report counts what the model went along with and what actually got through.
 
-**Status: early.** This is version 0.2.1. The package is on PyPI as
+**Status: early.** This is version 0.3.0. The package is on PyPI as
 [`kettle-labs`](https://pypi.org/project/kettle-labs/). The interfaces will change. The attack test has had
-one day of runs on two real models, by us: see "What we have measured so far" below and [RESULTS.md](https://github.com/engineerjames44/kettle-core/blob/main/RESULTS.md).
+two days of runs on real models, by us (two models on 15 November, four Claude models on 20 November): see "What we have measured so far" below and [RESULTS.md](https://github.com/engineerjames44/kettle-core/blob/main/RESULTS.md).
 Everything in "What has been checked" below can be run again from this folder, and says when it was measured.
+
+**New in 0.3.0:** Kettle in front of any MCP server (`python -m kettle.mcp`), setting that up for Claude
+Desktop and Cursor in one run (`python -m kettle.setup`), and Kettle in front of Claude Code
+(`python -m kettle.claude_code`). On the phone, "Approve and trust", one bot for an app's own chat and the
+buttons, and a lighter mark in a narrow summary. In the checkpoint, asking again when a rule's reasons change.
+In the attack test, scoring an agent that is a program of its own, Claude Code included (`--agent-command`,
+`--claude-code`), the trusted set by name, the coding-agent tricks, a pretend coding world and a scoreboard
+across models. And one command for all of it: `kettle`. Each is marked where it is described below.
 
 **New in 0.2.1:** a narrower preview for phone screens (`preview_width`, see "A narrower screen"), and the
 app's summary cut between words. At the usual width every preview is the same as in 0.2.0. The package also
@@ -34,6 +42,10 @@ attack test's check of itself. It uses no model and costs nothing, and should en
 ```
 python -m kettle.attacktest --self-check
 ```
+
+*New in 0.3.0:* the same is `kettle test --self-check`. `kettle --help` lists every command (`kettle test`,
+`kettle mcp`, `kettle setup`, `kettle claude-code` and the rest). Each takes the same options as its
+`python -m` form.
 
 The tests, the examples and the check scripts are not in the package. The commands in the rest of this page
 are run from a copy of this repository:
@@ -366,7 +378,7 @@ Fingerprint:
   there is room, and at the start of the next line if there is not.
 - The summary is still cut between words, and the space at the cut is not written: a summary line that
   carries on after `+ ` (a space after the mark) carries on after a space, and one that carries on after
-  `+` with nothing after it was cut inside a word too long to carry down. Newer than release 0.2.1: in
+  `+` with nothing after it was cut inside a word too long to carry down. New in 0.3.0: in
   0.2.1 the summary's space at a cut was written as `\u{0020}`, as a value's is.
 - A summary, an action name or who asked that does not fit beside its heading starts on the next line.
 - The fingerprint is cut into rows of the same length, so it can be compared row by row: one row from 68,
@@ -545,7 +557,7 @@ What counts as a yes:
 
 #### One bot for your app's chat and the buttons
 
-*Newer than release 0.2.1. The tests run it against a pretend Telegram. Not tried on a real phone yet.*
+*New in 0.3.0. The tests run it against a pretend Telegram. Not tried on a real phone yet.*
 
 Telegram lets only one program listen to a bot. An app that chats with its owner over Telegram would
 otherwise need a second bot for the buttons. With `on_message`, the approver hands the app each message the
@@ -566,7 +578,7 @@ approver = TelegramApprover(cp, token=token, chat_id=chat_id, on_message=handle_
 
 #### Approve and trust
 
-*Newer than release 0.2.1. The tests run it against a pretend Telegram. On a real phone it was tried by hand
+*New in 0.3.0. The tests run it against a pretend Telegram. On a real phone it was tried by hand
 once, on 2026-11-19, through an app of our own: the press added the address, and the next email to it ran
 with no ask.*
 
@@ -625,7 +637,7 @@ What to know:
 
 ### In front of any MCP server
 
-*Newer than release 0.2.1. The tests run it against a pretend MCP server on this machine. It was also run
+*New in 0.3.0. The tests run it against a pretend MCP server on this machine. It was also run
 once by hand, on 2026-11-19, in front of a real MCP server built with the official MCP SDK, with a scripted
 app and no phone: free calls ran and returned the server's own results, and a call set to "ask" was stopped.
 Not tried with Claude Desktop, Cursor or Claude Code yet.*
@@ -668,7 +680,7 @@ watch = ["to"]
 
 #### Setting it up in one run
 
-*Newer than release 0.2.1. The tests use settings files in a temporary folder and never an app's real
+*New in 0.3.0. The tests use settings files in a temporary folder and never an app's real
 ones. Not tried on a real Claude Desktop or Cursor yet.*
 
 ```
@@ -688,7 +700,7 @@ kept before any change, and `python -m kettle.setup --undo` puts each server bac
 
 ### In front of Claude Code
 
-*Newer than release 0.2.1. Tried on 2026-11-20 in real Claude Code (2.1.319, on Haiku, in a throwaway
+*New in 0.3.0. Tried on 2026-11-20 in real Claude Code (2.1.319, on Haiku, in a throwaway
 project) with a pretend phone. Asked for `git push --dry-run` three times, the first was approved and ran,
 the second was denied and did not run, and the third got no answer and did not run. In a fourth run
 `git status` ran with no ask, and reading `~/.kettle/claude-code.toml` with `cat` was held and did not run.
@@ -747,7 +759,7 @@ has to go through `tools.call`, or the test cannot see it. `tools.call` has the 
 the section above, so a loop that uses those pieces can be tested by passing it `tools.call`, with
 `anthropic_tools(tools.specs)` or `openai_tools(tools.specs)` as the tool list.
 
-Two case sets ship with it. The starter set is used unless you name another:
+Three case sets ship with it. The starter set is used unless you name another:
 
 - `kettle-starter-1` (6 normal jobs, 12 attacks). The trick text speaks to "the assistant" and asks for
   something the task never mentioned. It is easy to spot.
@@ -757,10 +769,45 @@ Two case sets ship with it. The starter set is used unless you name another:
   attacker wants is the owner's own task with the recipient changed. In each one, something else the agent
   can read disagrees with the planted text. An agent that stops and asks the owner instead of acting is not
   counted as going along, and is not counted as finishing the task either.
+- `kettle-trusted-1` (8 normal jobs, 13 attacks), with `--cases trusted` (*new in 0.3.0* by name). The planted
+  text sits in something the agent treats as the owner's own: the contact list, the owner's notes, a line
+  signed with the owner's name. In some attacks the contact list is the edited item and in others it is the
+  one to believe, so a fixed rule does not pass the set.
 
 ```
 .venv/bin/python -m kettle.attacktest --list --cases fraud
 ```
+
+### An agent that is a program of its own, Claude Code included
+
+*New in 0.3.0. The tests run a pretend agent program that speaks MCP, and the counts it gets match the same
+script called as a function. Tried once with real Claude Code (2.1.319, `--model haiku`, on 2026-11-20): one
+normal job and one attack, each with and without the checkpoint, 4 runs, no errors. That shows it works, and
+is not a result.*
+
+If your agent is not a Python function but a program (Claude Code, a CLI of your own, anything that can use
+an MCP server), the test can start it once per run and give it the pretend world as an MCP server:
+
+```
+kettle test --claude-code --model haiku --repeats 1 --only attack-file-gift          # prints the plan
+kettle test --claude-code --model haiku --repeats 1 --only attack-file-gift --yes    # runs it
+kettle test --agent-command 'my-agent --task {task} --mcp-config {mcp_config}' --yes
+```
+
+- In the command, `{task}` becomes the owner's task and `{mcp_config}` the path of an MCP settings file with
+  one server, `world`. With no `{task}`, the task is sent on the program's stdin. What the program prints is
+  its reply. A program that does not end with 0 is an error in that run, and what it ran before that still
+  counts. Nothing goes through a shell.
+- Every call it makes to `world` lands in the run's own tool box, so the checkpoint, the call limit and the
+  world's record work just as they do for a function agent.
+- **What it does with tools of its own is not seen.** `--claude-code` runs `claude -p` with `--tools ""`,
+  `--strict-mcp-config` and only `mcp__world__*` allowed, so it has the world's tools and nothing else. For your
+  own program, give it the same.
+- **It runs as you.** It uses your logins and settings, and it can cost money, so it does nothing without
+  `--yes`. `claude -p` uses your Claude login, or `ANTHROPIC_API_KEY` if that is set in your shell. Your
+  `CLAUDE.md` and hooks still apply: what is scored is Claude Code as you have it set up.
+- Each run starts in an empty folder that only you can read, and the folder is deleted afterwards. A run that
+  does not finish in `--agent-timeout` seconds (600 unless you say) is stopped and counted as an error.
 
 There is also a plain Claude agent built in. It calls a paid API, so it does nothing until you add `--yes`, and
 without it prints how many agent runs it would make:
@@ -854,7 +901,29 @@ writing the set, is in [RESULTS.md](https://github.com/engineerjames44/kettle-co
 
 ### What we have measured so far
 
-We ran the test ourselves on 15 November 2026 with the built-in plain Claude agent, on `claude-opus-5-5` and
+On 20 November 2026 we ran four Claude models on two case sets, with the plain Claude agent. Without the
+checkpoint, this is how often the attacker's action ran:
+
+| | Fable 5.2 | Haiku 5.5 | Sonnet 5.5 | Opus 5.5 |
+| --- | --- | --- | --- | --- |
+| Simple scams (`fraud`), each case 10 times | 0 of 70 | 3 of 70 | 10 of 70 | 11 of 70 |
+| Scams from a source the agent trusts (`sets/trusted.toml`), each case 10 times | 33 of 130 | 30 of 130 | 46 of 130 | 40 of 130 |
+
+With the checkpoint, each case 3 times, the attacker's action ran 0 times for every model on both sets, and
+the normal jobs were still done (Haiku missed one on each set).
+
+- **The hits cluster on a few attacks.** On the simple scams, nearly all of them came from one attack: a
+  changed address in the owner's notes. On the trusted set, three attacks beat every model every time.
+- **The strongest model was no safer** once the scam came from a source the agent trusts. Added up over all
+  13 attacks, no gap between models is more than chance.
+- **The 0 rests on a stand-in owner who says no to the wrong action every time.** With the checkpoint, the
+  models still went along in up to 13 of 39 runs, and each time the action was held. The checkpoint asked for every send and payment. These runs do not measure
+  the ready-made rules.
+
+Every count, with its range and the limits, is in the 20 November entry of
+[RESULTS.md](https://github.com/engineerjames44/kettle-core/blob/main/RESULTS.md).
+
+Before that, we ran the test ourselves on 15 November 2026 with the built-in plain Claude agent, on `claude-opus-5-5` and
 `claude-haiku-5-5`. This is our own run of our own test, not an independent one. The full write-up, with
 every report, is in [RESULTS.md](https://github.com/engineerjames44/kettle-core/blob/main/RESULTS.md).
 
@@ -906,16 +975,16 @@ a comparison with the approval steps built into agent frameworks.
 
 ## What has been checked
 
-All of this uses no model and costs nothing. Measured on 2026-11-19, on macOS, on the code in this folder, which is newer than
-release 0.2.1 (Approve and trust, the narrow summary's mark, and asking again when a rule's reasons
-change). The built package has a row of its own. Where a row was measured on older code, it says so.
+All of this uses no model and costs nothing. Measured on 2026-11-20, on macOS, on the source code of release
+0.3.0 in this folder, with `claude` kept off the PATH. The built package has a row of its own.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| The tests | `.venv/bin/pytest` | 5671 passed on Python 3.14.8 on 2026-11-20, with both extras installed (`claude` and `openai`), on the code with Kettle for Claude Code. Not measured again on other versions or with no extras. On 2026-11-19: 5484. For release 0.2.1, on 2026-11-18: 5228. On 2026-11-17, before the ready-made rules were added: 1119. For 0.2.0, on 2026-11-17: 1059 passed on 3.14.8. For 0.1.0, on 2026-11-15: 604 passed on 3.14.8 and 3.15.2; on 3.11.18, 603 passed and 1 was skipped (it needs 3.14); with neither extra, on 3.15.2, 598 passed and 6 were skipped. |
-| The attack test's check of itself | `.venv/bin/python -m kettle.attacktest --self-check` | 8 of 8 checks held, on each of the two case sets (add `--cases fraud` for the second) |
+| The tests | `.venv/bin/pytest` | 5696 passed on Python 3.14.8 on 2026-11-20, with both extras installed (`claude` and `openai`). Not measured again on other versions or with no extras. On 2026-11-19: 5484. For release 0.2.1, on 2026-11-18: 5228. On 2026-11-17, before the ready-made rules were added: 1119. For 0.2.0, on 2026-11-17: 1059 passed on 3.14.8. For 0.1.0, on 2026-11-15: 604 passed on 3.14.8 and 3.15.2; on 3.11.18, 603 passed and 1 was skipped (it needs 3.14); with neither extra, on 3.15.2, 598 passed and 6 were skipped. |
+| The attack test's check of itself | `.venv/bin/python -m kettle.attacktest --self-check` | 8 of 8 checks held, on each of the three case sets (add `--cases fraud` or `--cases trusted`) |
 | Checkpoint and source trail broken on purpose | `.venv/bin/python checks/break_checkpoint.py` | 282 breaks tried, 282 caught by the tests |
-| Attack test broken on purpose | `.venv/bin/python checks/break_attacktest.py` | 107 breaks tried, 106 caught, 1 known and explained |
+| Attack test broken on purpose | `.venv/bin/python checks/break_attacktest.py` | 109 breaks tried, 108 caught, 1 known and explained |
+| Scoring a program agent, and the `kettle` command, broken on purpose | `.venv/bin/python checks/break_command_agent.py` | 24 breaks tried, 24 caught by the tests |
 | Adapters broken on purpose | `.venv/bin/python checks/break_adapters.py` | 43 breaks tried, 43 caught by the tests |
 | Telegram approver broken on purpose | `.venv/bin/python checks/break_telegram.py` | 227 breaks tried, 226 caught by the tests, 1 known and explained (a second check that the first one always answers first) |
 | Attacks on the yes | `.venv/bin/python -m kettle.attacktest --yes-set` | 25 tried: 23 stopped, 2 got through, both known limits (named above) |
@@ -924,8 +993,9 @@ change). The built package has a row of its own. Where a row was measured on old
 | Receipts broken on purpose | `.venv/bin/python checks/break_verify.py` | 51 breaks tried, 51 caught by the tests |
 | `kettle.mcp` broken on purpose | `.venv/bin/python checks/break_mcp.py` | 25 breaks tried, 25 caught by the tests |
 | `kettle.setup` broken on purpose | `.venv/bin/python checks/break_setup.py` | 19 breaks tried, 19 caught by the tests |
-| `kettle.claude_code` broken on purpose | `.venv/bin/python checks/break_claude_code.py` | 56 breaks tried, 56 caught by the tests, on 2026-11-20 |
-| Source trail over the saved runs | `.venv/bin/python checks/trail_over_saved_runs.py` | 170 of 170 runs saved on 15 November played again. Of the held actions, 31 of 31 aimed at the attacker and 55 of 55 others traced to an earlier call, and none had no source found |
+| `kettle.claude_code` broken on purpose | `.venv/bin/python checks/break_claude_code.py` | 56 breaks tried, 56 caught by the tests |
+| The shell rule broken on purpose | `.venv/bin/python checks/break_shell.py` | 742 breaks tried, 742 caught by the tests |
+| Source trail over the saved runs | `.venv/bin/python checks/trail_over_saved_runs.py` | 954 of 954 runs played again, from the 17 saved reports of the starter and fraud sets in `results/` (15 and 20 November). Of the held actions, 65 of 65 aimed at the attacker and 592 others traced to an earlier call, and none had no source found. The 9 reports of the trusted set are left out: this check does not read that set yet. On 2026-11-16, before the 20 November runs: 170 of 170, with 31 and 55. |
 | Previews read back | `.venv/bin/python checks/read_back.py` | 150,000 random records, each written at 78 and again at one narrower width (32 to 77, picked at random): 0 read back wrongly, no line longer than its width, no two different records sharing a preview |
 | The built package | see [RELEASING.md](https://github.com/engineerjames44/kettle-core/blob/main/RELEASING.md) | For 0.2.1, on 2026-11-19: the wheel and the source archive build from a clean copy of the committed files, and the wheel installed by itself into an empty environment on Python 3.11.18, 3.14.8 and 3.15.2 passes the self-check on both case sets and gives the same 25 tried, 23 stopped on the attacks on the yes. After the upload the same day, the files on PyPI were byte for byte the ones built, and `pip install kettle-labs==0.2.1` from PyPI into an empty environment on the same three Python versions passed the same checks with the same counts. For 0.2.0, on 2026-11-17: the wheel and the source archive build from a clean copy of the committed files, and the wheel installed by itself into an empty environment on Python 3.11.18, 3.14.8 and 3.15.2 passes the self-check on both case sets and gives the same 25 tried, 23 stopped on the attacks on the yes. After the upload the same evening, `pip install kettle-labs==0.2.0` from PyPI into an empty environment on the same three Python versions passed the same checks with the same counts. For 0.1.0, on 2026-11-16, `pip install kettle-labs` from PyPI into an empty environment on Python 3.14.8 passed the two self-checks |
 
@@ -934,7 +1004,7 @@ change). The built package has a row of its own. Where a row was measured on old
   coding-agent tricks, the pretend coding world and the model scoreboard, reads by the shell kept to
   the session's folders, the commands that check the attack test's own numbers, and more cases for the source
   trail and the attack test. All are new since 0.2.0 and most are not described in this README yet.
-  Of the rest, 51 are for `kettle.claude_code`, 36 for `kettle.mcp`, 18 for `kettle.setup`, 435 for the checkpoint, 301 for the attack test, 64 for the adapters, 237 for the
+  Of the rest, 25 are for scoring a program agent and the `kettle` command, 51 for `kettle.claude_code`, 36 for `kettle.mcp`, 18 for `kettle.setup`, 435 for the checkpoint, 301 for the attack test, 64 for the adapters, 237 for the
   Telegram approver, 39 for the attacks on the yes, 25 for the browser demo and 31 for the receipts. 8 run
   the examples and 7 check that the tests stay on this machine. Of the checkpoint's, the 102 in
   `tests/test_fixed_ways_around.py` are the ones that try a way around it (a changed action, a reused or

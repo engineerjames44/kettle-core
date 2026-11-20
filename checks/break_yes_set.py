@@ -24,7 +24,7 @@ Y, M = "attacktest/yes_set.py", "attacktest/__main__.py"
 APPROVE = "decision = self._checkpoint.approve(shown.request_id, shown.fingerprint, self._approver)"
 WHO = "if any(type(found) is not int or found != self._chat_id for found in ids) or chat.get(\"type\") != \"private\":"
 NOT_FOUND = "if all(given or used for _, _, _, given, used in calls) and typed is not True and not any(listed for _, listed in lists):"
-NOT_A_PRESS = '        if type(query) is not dict:\n            return  # typed text, and everything else that is not a button press, is not an answer\n'
+NOT_A_PRESS = '        if type(query) is not dict:\n            self._typed(update.get("message"))\n            return  # typed text, and everything else that is not a button press, is not an answer\n'
 TYPED_YES = (
     '        typed = update.get("message") if type(update.get("message")) is dict else {}\n'
     '        if type(query) is not dict and str(typed.get("text", "")).lower() in ("yes", "approve"):\n'

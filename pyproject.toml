@@ -24,6 +24,9 @@ classifiers = [
 ]
 dependencies = []
 
+[project.scripts]
+kettle = "kettle.__main__:main"
+
 [project.urls]
 Homepage = "https://www.kettlelabs.si"
 Source = "https://github.com/engineerjames44/kettle-core"

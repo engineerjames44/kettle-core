@@ -7,6 +7,9 @@
     --claude                  test a plain Claude agent (calls a paid API; needs --yes)
     --openai --model NAME     test a plain agent on the OpenAI chat API, or on another server
                               that speaks it with --base-url (needs --yes)
+    --agent-command 'CMD'     test an agent that is a program, with the pretend world as its
+                              MCP server: {task} and {mcp_config} in CMD are filled in (needs --yes)
+    --claude-code             test Claude Code itself, with only the pretend world's tools (needs --yes)
 """
 
 from __future__ import annotations
@@ -87,19 +90,22 @@ def main(argv: Optional[list] = None) -> int:
     what.add_argument("--yes-set", action="store_true", help="try the attacks on the yes itself, in plain code (no model, no cost)")
     what.add_argument("--agent", metavar="MODULE:FUNCTION", help="your agent: a function (task, tools) -> reply")
     what.add_argument("--claude", action="store_true", help="a plain Claude agent (calls a paid API)")
+    what.add_argument("--agent-command", metavar="CMD", help="your agent as a program: {task} and {mcp_config} in CMD are filled in for each run (it can cost money; needs --yes)")
+    what.add_argument("--claude-code", action="store_true", help="Claude Code itself, through its own login, with only the pretend world's tools (it can cost money; needs --yes)")
     what.add_argument("--openai", action="store_true", help="a plain agent on the OpenAI chat API; needs --model (a paid API unless --base-url points somewhere free)")
-    parser.add_argument("--cases", metavar="FILE", help="a case file to use instead of the starter set, or fraud for the built-in fraud set")
+    parser.add_argument("--cases", metavar="FILE", help="a case file to use instead of the starter set, or the name of a built-in set: starter, fraud or trusted")
     parser.add_argument("--only", metavar="IDS", help="run only these case ids, separated by commas")
     parser.add_argument("--repeats", type=int, default=5, help="times to run each case in each setup (default 5)")
     parser.add_argument("--setups", default=",".join(SETUPS), help=f"which setups to run, from {','.join(SETUPS)} (default both)")
     parser.add_argument("--max-calls", type=int, default=30, help="tool calls allowed per run (default 30)")
     parser.add_argument("--label", help="a name for the agent, shown in the report")
     parser.add_argument("--out", default="runs", help="folder for the report (default runs)")
-    parser.add_argument("--model", help="with --claude or --openai: the model to use (--openai has no default)")
+    parser.add_argument("--model", help="with --claude, --openai or --claude-code: the model to use (--openai has no default)")
     parser.add_argument("--base-url", metavar="URL", help="with --openai: another server that speaks the same API, such as one on this machine")
     parser.add_argument("--key-name", metavar="NAME", help="with --openai: the name the key is stored under (default OPENAI_API_KEY; with --base-url no key is sent unless this is given)")
     parser.add_argument("--env-file", default=".env", help="with --claude or --openai: file holding ANTHROPIC_API_KEY or OPENAI_API_KEY (default .env)")
     parser.add_argument("--key-from-env", action="store_true", help="with --claude or --openai: use the key from the environment instead of the file")
+    parser.add_argument("--agent-timeout", type=float, default=600.0, metavar="SECONDS", help="with --agent-command or --claude-code: how long one run may take (default 600)")
     parser.add_argument("--yes", action="store_true", help="with --claude or --openai: go ahead with the run")
     args = parser.parse_args(argv)
 
@@ -191,6 +197,24 @@ def main(argv: Optional[list] = None) -> int:
             return 2
         label, settings = args.label or f"Plain agent on the OpenAI chat API ({args.model})", agent.settings
         print(f"Calling the API at {settings.get('api_address', 'an address the agent did not give')}", flush=True)
+    elif args.agent_command or args.claude_code:
+        from .command_agent import CommandAgent, claude_code, parse
+
+        try:
+            command = claude_code(args.model) if args.claude_code else parse(args.agent_command)
+        except ValueError as error:
+            print(f"{error}. Nothing has been run.", file=sys.stderr)
+            return 2
+        if not args.agent_timeout > 0:
+            print("--agent-timeout must be more than 0. Nothing has been run.", file=sys.stderr)
+            return 2
+        agent = CommandAgent(command, timeout=args.agent_timeout)
+        if not args.yes:
+            print(f"This would start {command[0]} {count} times, each with the pretend world as its MCP server.")
+            print("It runs as you, with your logins, and can cost money. Nothing has been run. Add --yes to go ahead.")
+            return 0
+        print(f"Running: {agent.settings['agent_command']}", flush=True)
+        label, settings = args.label or ("Claude Code" + (f" ({args.model})" if args.model else "") if args.claude_code else command[0]), agent.settings
     else:
         agent = _load_agent(args.agent)
         label, settings = args.label or args.agent, {"agent": args.agent}

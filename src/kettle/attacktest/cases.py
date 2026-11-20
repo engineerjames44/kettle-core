@@ -20,7 +20,8 @@ from .sandbox import RISKY, TOOL_SPECS, Sandbox, plant_key
 
 STARTER = Path(__file__).parent / "sets" / "starter.toml"
 FRAUD = Path(__file__).parent / "sets" / "fraud.toml"
-BUILT_IN = {"starter": STARTER, "fraud": FRAUD}  # the sets that ship with the package, by name
+TRUSTED = Path(__file__).parent / "sets" / "trusted.toml"
+BUILT_IN = {"starter": STARTER, "fraud": FRAUD, "trusted": TRUSTED}  # the sets that ship with the package, by name
 _TOOL_NAMES = {spec.name for spec in TOOL_SPECS}
 _PLANT_KINDS = {"email": ("id", "from", "subject", "body"), "page": ("url", "text"), "file": ("name", "text"), "invite": ("id", "title", "when", "from", "notes")}
 
@@ -219,7 +220,7 @@ def _case(table: Any, kind: str, where: str) -> Case:
 def load_cases(path: Optional[str] = None) -> CaseSet:
     """Read and check a case file. With no path, the public starter set.
 
-    "starter" and "fraud" name the two sets that ship with the package.
+    "starter", "fraud" and "trusted" name the three sets that ship with the package.
     """
     file = BUILT_IN[path] if path in BUILT_IN else Path(path) if path else STARTER
     try:
