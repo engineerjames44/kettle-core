@@ -743,7 +743,7 @@ a comparison with the approval steps built into agent frameworks.
 ## What has been checked
 
 All of this uses no model and costs nothing. Measured on 2026-11-17 and 2026-11-18, on macOS, on the source code of
-release 0.2.1 in this folder, not on a built package (that row says which release it was measured on). Where a row was measured on
+release 0.2.1 in this folder; the built package has a row of its own. Where a row was measured on
 the 0.2.0 or the 0.1.0 code, it says so.
 
 | Check | Command | Result |
@@ -760,7 +760,7 @@ the 0.2.0 or the 0.1.0 code, it says so.
 | Receipts broken on purpose | `.venv/bin/python checks/break_verify.py` | 51 breaks tried, 51 caught by the tests |
 | Source trail over the saved runs | `.venv/bin/python checks/trail_over_saved_runs.py` | 170 of 170 runs saved on 15 November played again. Of the held actions, 31 of 31 aimed at the attacker and 55 of 55 others traced to an earlier call, and none had no source found |
 | Previews read back | `.venv/bin/python checks/read_back.py` | 150,000 random records, each written at 78 and again at one narrower width (32 to 77, picked at random): 0 read back wrongly, no line longer than its width, no two different records sharing a preview |
-| The built package | see [RELEASING.md](https://github.com/engineerjames44/kettle-core/blob/main/RELEASING.md) | For 0.2.0, on 2026-11-17: the wheel and the source archive build from a clean copy of the committed files, and the wheel installed by itself into an empty environment on Python 3.11.18, 3.14.8 and 3.15.2 passes the self-check on both case sets and gives the same 25 tried, 23 stopped on the attacks on the yes. After the upload the same evening, `pip install kettle-labs==0.2.0` from PyPI into an empty environment on the same three Python versions passed the same checks with the same counts. For 0.1.0, on 2026-11-16, `pip install kettle-labs` from PyPI into an empty environment on Python 3.14.8 passed the two self-checks |
+| The built package | see [RELEASING.md](https://github.com/engineerjames44/kettle-core/blob/main/RELEASING.md) | For 0.2.1, on 2026-11-19: the wheel and the source archive build from a clean copy of the committed files, and the wheel installed by itself into an empty environment on Python 3.11.18, 3.14.8 and 3.15.2 passes the self-check on both case sets and gives the same 25 tried, 23 stopped on the attacks on the yes. After the upload the same day, the files on PyPI were byte for byte the ones built, and `pip install kettle-labs==0.2.1` from PyPI into an empty environment on the same three Python versions passed the same checks with the same counts. For 0.2.0, on 2026-11-17: the wheel and the source archive build from a clean copy of the committed files, and the wheel installed by itself into an empty environment on Python 3.11.18, 3.14.8 and 3.15.2 passes the self-check on both case sets and gives the same 25 tried, 23 stopped on the attacks on the yes. After the upload the same evening, `pip install kettle-labs==0.2.0` from PyPI into an empty environment on the same three Python versions passed the same checks with the same counts. For 0.1.0, on 2026-11-16, `pip install kettle-labs` from PyPI into an empty environment on Python 3.14.8 passed the two self-checks |
 
 - **The tests.** 4108 came with the ready-made rules in `src/kettle/rules.py`: for those rules, the hold in
   `src/kettle/holds.py`, the commands that check the attack test's own numbers, and more cases for the source
@@ -785,8 +785,7 @@ the 0.2.0 or the 0.1.0 code, it says so.
   twice", and the tests are run against the copy. A break the tests do not notice is a hole in the tests. The
   one break that is not caught removes the second of two checks the stand-in owner makes on an action; the
   first still refuses, so nothing changes that a test could see.
-- **Not tried at all:** the OpenAI agent against OpenAI's real API, a built package of 0.2.1 (the row above
-  is still 0.2.0's), and the question in the terminal on Windows or Linux. A narrower preview was tried on a
-  real phone by hand once: see "A narrower screen".
+- **Not tried at all:** the OpenAI agent against OpenAI's real API, and the question in the terminal on
+  Windows or Linux. A narrower preview was tried on a real phone by hand once: see "A narrower screen".
 - These checks show the code does what its tests say. They were written alongside the code, and nobody
   independent has reviewed it.
